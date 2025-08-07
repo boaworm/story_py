@@ -20,4 +20,11 @@ Use the argument to change to a different model if you want.
 # Sample data
 To make it easier to understand, i have put some sample data in the repo. Obviously you want to update this according to your own needs.
 
+# Performance
+Will obviously depend on your GPU
+
+With an M1 Max, it takes me 15 minutes to generate a new chapter at this point, with around 30kb of background.
+
+# Sample run
+
 
