@@ -127,6 +127,13 @@ def main():
         help="Optional parameter to define the length of the summary.",
     )
     
+    parser.add_argument(
+        "--key_event_chunk_size",
+        type=int,
+        default=5,
+        help="Optional parameter to the number of key events to process in each iteration. Lower number = longer story.",
+    )
+    
     
     args = parser.parse_args()
 
@@ -140,6 +147,7 @@ def main():
 
     # LLM Setup
     # ==============================================================================
+    stop_tokens = ["<|im_end|>", "<|end_of_text|>", "<|eot_id|>"]
     try:
         llm = OllamaLLM(
             model=args.model,
@@ -147,6 +155,7 @@ def main():
             temperature=1,
             max_tokens=-1,
             num_predict=-1, # Generate max number of tokens
+            stop=stop_tokens, # Prevent the input prompt from being returned
             num_ctx=128000, # 65000, # 32768        
         )
     except Exception as e:
@@ -263,8 +272,9 @@ def main():
     print("Applying provided instructions to create a new chapter to the story...")
     print("="*50)
 
+    full_summary_text = ""
     with open(args.save_summary, "r", encoding="utf-8") as f:
-        story_text = f.read()
+        full_summary_text = f.read()
 
     # Load the instructions from the instructions file
     with open(args.instructions, "r", encoding="utf-8") as f:
@@ -289,26 +299,29 @@ def main():
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
 
-    event_chunks = list(chunk_list(key_events, 5))
 
     # Truncate new chapter file
     Path(args.new_chapter).unlink(missing_ok=True)
 
     # Prompt template for each chunk
     chunk_prompt_template = (
-        "You are an expert at writing engaging children's fantasy stories. "
-        "Write a detailed, coherent chapter that covers the following key events, "
-        "using the previous story as context. Do not repeat content. Use simple language, "
-        "short to medium sentences, and references to Tolkien's works where appropriate. "
-        "Avoid too complicated new words. "
-        "Do not introduce new characters or events unless explicitly requested. "
-        "If I decribe a character, do not assume they are meeting them. "
-        "If i decribe a place, do not assume they will travel there." 
-        "If i describe a creature or other being, do not assume they will meet, see or encounter them. "
-        "Do not take the story line beyond what is described in the key events. "
-        "Do not add titles or headers.\n\n"
-        "Previous story:\n{previous_story}\n\n"
-        "Key events to cover:\n{key_events}\n\n"
+        "INSTRUCTION\n"
+        "You are an expert at writing engaging children's fantasy stories. \n"
+        "Write a detailed, coherent chapter that covers the following key events. \n"
+        "using the previous story as context. Do not repeat content. Use simple language.\n"
+        "short to medium sentences, and references to Tolkien's works where appropriate. \n"
+        "Avoid too complicated new words. \n"
+        "Do not introduce new characters or events unless explicitly requested. \n"
+        "If I describe a character, do not assume they are meeting them. \n"
+        "If i describe a place, do not assume they will travel there.\n" 
+        "If i describe a creature or other being, do not assume they will meet, see or encounter them. \n"
+        "Do not take the story line beyond what is described in the key events. \n"
+        "Do not add titles or headers.\n"
+        "ONLY OUTPUT THE NEW STORY, directly related to the key events. Do not repeat anything from the previous story.\n"
+        "BEGINNING OF BACKGROUND\n{previous_story}\n"
+        "END OF BACKGROUND\n\n"
+        "BEGINNING OF KEY EVENTS\n{key_events}\n"
+        "END OF KEY EVENTS\n\n"
     )
 
     chunk_prompt = PromptTemplate(
@@ -317,28 +330,35 @@ def main():
     )
 
     whole_new_chapter = ""
-    summary_plus_new_story = story_text
+    summary_plus_new_story = full_summary_text
+
+    # Truncate new chapter file
+    # Path(args.new_chapter).unlink(missing_ok=True)
+    event_chunks = list(chunk_list(key_events, key_event_chunk_size))
 
     for idx, chunk in enumerate(event_chunks):
-        print(f"Generating story section for key events {idx*5+1}-{idx*5+len(chunk)} [chunk {idx+1} of {len(event_chunks)}]...")
+        print(f"Generating story section for key events {idx*key_event_chunk_size+1}-{idx*key_event_chunk_size+len(chunk)} [chunk {idx+1} of {len(event_chunks)}]...")
         key_events_str = "\n".join(f"- {event}" for event in chunk)
         prompt = chunk_prompt.format(previous_story=summary_plus_new_story, key_events=key_events_str)
         try:
             new_story_section = llm.invoke(prompt)
             whole_new_chapter += new_story_section.strip() + "\n\n"
+            summary_plus_new_story += "\nxx\n" + new_story_section.strip()
         except Exception as e:
             print(f"Error generating story section for chunk {idx+1}: {e}")
             break
-        with open(args.new_chapter, "a", encoding="utf-8") as f:
-            f.write(new_story_section.strip() + "\n\n")
-        summary_plus_new_story += "\nxx\n" + new_story_section.strip()
+    
+    print(f"New chapter written to {args.new_chapter}.")
+    with open(args.new_chapter, "w", encoding="utf-8") as f:
+        f.write(whole_new_chapter.strip() + "\n\n")
+        f.close()
 
-    print(f"\nFull chapter written to {args.new_chapter}.")
+    ## Print the whole new chapter to console    
     print("\n" + "="*50)
     print(whole_new_chapter)
     print("="*50)
 
-
+    
     # 8. Calculate and print the total execution time
     # ==============================================================================
     end_time = time.time()

@@ -1,1 +1,1 @@
-python story_writer.py --story story_background.txt --instructions instructions.txt --save_summary summary.txt --new_chapter new_chapter.txt
+python story_writer.py --story story_background.txt --instructions instructions.txt --save_summary summary.txt --new_chapter new_chapter.txt --key_event_chunk_size 4
