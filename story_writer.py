@@ -174,6 +174,44 @@ def main():
     
     # Process the first chunk to create the initial narrative and write it to file
     print("Processing initial chunk to create the narrative...")
+
+    def get_incremented_filename(filename):
+        path = Path(filename)
+        stem = path.stem
+        suffix = path.suffix
+        match = re.match(r"^(.*?)(\d+)?$", stem)
+        base = match.group(1)
+        num = match.group(2)
+        candidate = filename
+        if not path.exists():
+            return filename
+        # If it ends with a number, increment it
+        if num:
+            new_num = int(num) + 1
+            new_stem = f"{base}{new_num}"
+        else:
+            new_stem = f"{stem}1"
+        candidate = str(path.with_name(new_stem + suffix))
+        # Keep incrementing if the candidate exists
+        while Path(candidate).exists():
+            match = re.match(r"^(.*?)(\d+)?$", Path(candidate).stem)
+            base = match.group(1)
+            num = match.group(2)
+            if num:
+                new_num = int(num) + 1
+                new_stem = f"{base}{new_num}"
+            else:
+                new_stem = f"{Path(candidate).stem}1"
+            candidate = str(Path(candidate).with_name(new_stem + suffix))
+        return candidate
+
+    save_summary_path = args.save_summary
+    if Path(save_summary_path).exists():
+        save_summary_path = get_incremented_filename(save_summary_path)
+        print(f"File exists. Saving summary to: {save_summary_path}")
+    else:
+        print(f"Saving summary to: {save_summary_path}")
+
     try:
         initial_narrative = llm.invoke(
             initial_prompt.format(
@@ -181,7 +219,7 @@ def main():
                 length_constraint=length_constraint_str
             )
         )
-        with open(args.save_summary, "w", encoding="utf-8") as f:
+        with open(save_summary_path, "w", encoding="utf-8") as f:
             f.write(initial_narrative)
         current_narrative = initial_narrative
     except Exception as e:
@@ -200,7 +238,7 @@ def main():
                     text=docs[i].page_content,
                 )
             )
-            with open(args.save_summary, "a", encoding="utf-8") as f: # Appending to the file
+            with open(save_summary_path, "a", encoding="utf-8") as f: # Appending to the file
                 f.write(current_narrative)
 
             # Reset current_narrative to just the last output to keep it within the context window
@@ -219,10 +257,10 @@ def main():
 
     # Reload the entire narrative from the file, as it may be too large to hold in memory
     try:
-        with open(args.save_summary, "r", encoding="utf-8") as f:
+        with open(save_summary_path, "r", encoding="utf-8") as f:
             final_narrative = f.read()
     except Exception as e:
-        print(f"Error: Could not read the saved narrative file '{args.save_summary}'.")
+        print(f"Error: Could not read the saved narrative file '{save_summary_path}'.")
         print(f"Reason: {e}")
         return
 
