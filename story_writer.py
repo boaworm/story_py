@@ -101,28 +101,8 @@ def main():
 
     print("Loading documents and instructions...")
 
-    # 2. Document and Instruction Loading
-    # ==============================================================================
-    # Load the large story file
-    with open(args.story, "r", encoding="utf-8") as f:
-        story_text = f.read()
 
-    # Load the instructions from the instructions file
-    with open(args.instructions, "r", encoding="utf-8") as f:
-        instructions_text = f.read()
-
-    # 3. Text Splitting (Sliding Window Logic)
-    # ==============================================================================
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=args.chunk_size,
-        chunk_overlap=args.chunk_overlap,
-        length_function=len,
-    )
-    docs = text_splitter.create_documents([story_text])
-
-    print(f"Original text split into {len(docs)} chunks.")
-
-    # 4. LLM Setup
+    # 1. LLM Setup
     # ==============================================================================
     try:
         llm = OllamaLLM(
@@ -137,6 +117,87 @@ def main():
         print(f"Failed to connect to Ollama. Please ensure the service is running at {args.ollama_url} and the model '{args.model}' is downloaded.")
         print(f"Error: {e}")
         return
+
+
+    # 2. Document and Instruction Loading
+    # ==============================================================================
+    # Load the large story file
+    with open(args.story, "r", encoding="utf-8") as f:
+        story_text = f.read()
+
+    # Load the instructions from the instructions file
+    with open(args.instructions, "r", encoding="utf-8") as f:
+        instructions_text = f.read()
+
+    # Extract key events from instructions.txt
+    key_events = []
+    in_events = False
+    for line in instructions_text.splitlines():
+        if line.strip() == "KEY EVENTS:":
+            in_events = True
+            continue
+        if line.strip() == "END OF KEY EVENTS:":
+            break
+        if in_events:
+            line = line.strip()
+            if line:
+                key_events.append(line)
+
+    # Group key events into chunks of 5
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    event_chunks = list(chunk_list(key_events, 5))
+
+    # Prepare output file
+    chapter_path = "new_chapter.txt"
+    Path(chapter_path).unlink(missing_ok=True)
+
+    # Prompt template for each chunk
+    chunk_prompt_template = (
+        "You are an expert at writing engaging children's fantasy stories. "
+        "Write a detailed, coherent story section that covers the following key events, "
+        "using the previous story as context. Do not repeat content. Use simple language, "
+        "short to medium sentences, and references to Tolkien's works where appropriate. "
+        "Do not add titles or headers.\n\n"
+        "Previous story:\n{previous_story}\n\n"
+        "Key events to cover:\n{key_events}\n\n"
+        "STORY SECTION:"
+    )
+
+    chunk_prompt = PromptTemplate(
+        input_variables=["previous_story", "key_events"],
+        template=chunk_prompt_template
+    )
+
+    # Ensure llm is defined before this block (it is, above)
+    previous_story = ""
+    for idx, chunk in enumerate(event_chunks):
+        print(f"Generating story section for key events {idx*5+1}-{idx*5+len(chunk)} [chunk {idx} of {len(event_chunks)}]...")
+        key_events_str = "\n".join(f"- {event}" for event in chunk)
+        prompt = chunk_prompt.format(previous_story=previous_story, key_events=key_events_str)
+        try:
+            story_section = llm.invoke(prompt)
+        except Exception as e:
+            print(f"Error generating story section for chunk {idx+1}: {e}")
+            break
+        with open(chapter_path, "a", encoding="utf-8") as f:
+            f.write(story_section.strip() + "\n\n")
+        previous_story += "\n" + story_section.strip()
+
+    print(f"\nFull chapter written to {chapter_path}.")
+
+    # 3. Text Splitting (Sliding Window Logic)
+    # ==============================================================================
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        length_function=len,
+    )
+    docs = text_splitter.create_documents([story_text])
+
+    print(f"Original text split into {len(docs)} chunks.")
 
     # 5. Narrative Retelling Process (Refine Chain for Full Narrative)
     # ==============================================================================
@@ -208,9 +269,8 @@ def main():
     save_summary_path = args.save_summary
     if Path(save_summary_path).exists():
         save_summary_path = get_incremented_filename(save_summary_path)
-        print(f"File exists. Saving summary to: {save_summary_path}")
-    else:
-        print(f"Saving summary to: {save_summary_path}")
+
+    print(f"Saving summary to: {save_summary_path}", end="")
 
     try:
         initial_narrative = llm.invoke(
@@ -223,9 +283,10 @@ def main():
             f.write(initial_narrative)
         current_narrative = initial_narrative
     except Exception as e:
-        print("Error processing the first chunk.")
+        print("'\nError processing the first chunk.")
         print(f"Reason: {e}")
         return
+    print("... done!")
 
     # Process subsequent chunks using the refine prompt, appending to the file
     total_chunks = len(docs)

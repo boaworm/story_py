@@ -17,7 +17,9 @@ You can then append the new story line/chapter to the background.txt file, updat
 This assumes you are running ollama locally, and have an LLM loaded. By default, it looks for gemma3:27b
 Use the argument to change to a different model if you want.
 
-Note that I have optimized this for a Mac Studio M1 Max with 64GB ram, so i am using the full 128k context window. Depending on your hardware, you may want to change that. Locate the llm section and update as per your needs:
+Note that I have optimized this for a Mac Studio M1 Max with 64GB ram, so i am using the full 128k context window. This uses around 28GB of RAM. 
+
+Depending on your hardware, you may want to change that. Locate the llm section and update as per your needs:
 
 ```
 try:
