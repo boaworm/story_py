@@ -25,6 +25,8 @@ Will obviously depend on your GPU
 
 With an M1 Max, it takes me 15 minutes to generate a new chapter at this point, with around 30kb of background.
 
+You can obviously do this quite a lot faster using ChatGTP or Gemini or aistudio.google.com, but it is fun running it locally. And gemma3:27b is quite good at this (as opposed to gemma3:8b which writes miserable stories).
+
 # Sample run
 
 

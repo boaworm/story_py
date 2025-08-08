@@ -1,25 +1,12 @@
 # Import necessary libraries
 import argparse
-import os
-from pathlib import Path
 import time
-import re
+from pathlib import Path
 
 # LangChain imports
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-
-
-def count_tokens(text: str) -> int:
-    """
-    Estimates the number of tokens in a string based on a word count.
-    
-    This is an approximation, as actual tokenization can vary between models.
-    A common rule of thumb is that one word is roughly equal to one token.
-    """
-    return len(text.split())
 
 def main():
     """
@@ -68,13 +55,6 @@ def main():
         "--chunk_overlap",
         type=int,
         default=5000,
-        help="The number of characters to overlap between chunks to maintain context.",
-    )
-    parser.add_argument(
-        "--summary_length",
-        type=int,
-        default=70000,
-        help="The desired length of the final output in tokens. This parameter is now a hard target for the 'refine' prompt.",
     )
     parser.add_argument(
         "--save_summary",
@@ -120,14 +100,18 @@ def main():
     )
     docs = text_splitter.create_documents([story_text])
 
-    print(f"Original text split into {len(docs)} chunks.")
+    print(f"Original story split into {len(docs)} chunks.")
 
     # 4. LLM Setup
     # ==============================================================================
     try:
         llm = OllamaLLM(
             model=args.model,
-            base_url=args.ollama_url
+            base_url=args.ollama_url,
+            temperature=1,
+            max_tokens=-1,
+            num_predict=-1, # Generate max number of tokens
+            num_ctx=65000, # 32768
         )
     except Exception as e:
         print(f"Failed to connect to Ollama. Please ensure the service is running at {args.ollama_url} and the model '{args.model}' is downloaded.")
@@ -136,18 +120,15 @@ def main():
 
     # 5. Narrative Retelling Process (Refine Chain for Full Narrative)
     # ==============================================================================
-    length_constraint_str = f"The final narrative should be a detailed, comprehensive retelling of around {args.summary_length} tokens."
-
     # Define a prompt for the initial chunk
     initial_prompt_template = """
     You are an expert at creating detailed narratives from source material. Create a comprehensive retelling of the following text, focusing on all key plot points, characters, and settings. Your goal is to be expansive, not concise.
-    {length_constraint}
     
     Text: "{text}"
     
     DETAILED NARRATIVE:"""
     initial_prompt = PromptTemplate(
-        input_variables=["text", "length_constraint"],
+        input_variables=["text"],
         template=initial_prompt_template
     )
 
@@ -164,28 +145,24 @@ def main():
     
     Updated Detailed Narrative:"""
     refine_prompt = PromptTemplate(
-        input_variables=["existing_answer", "text"], # Removed summary_length from refine prompt
+        input_variables=["existing_answer", "text"],
         template=refine_prompt_template
     )
     
-    # Process the first chunk to create the initial narrative and write it to file
-    print("Processing initial chunk to create the narrative...")
+    # Process the first chunk to create the initial narrative
+    print("Processing 1st chunk to create the narrative...")
     try:
-        initial_narrative = llm.invoke(
+        current_narrative = llm.invoke(
             initial_prompt.format(
-                text=docs[0].page_content, 
-                length_constraint=length_constraint_str
+                text=docs[0].page_content
             )
         )
-        with open(args.save_summary, "w", encoding="utf-8") as f:
-            f.write(initial_narrative)
-        current_narrative = initial_narrative
     except Exception as e:
         print("Error processing the first chunk.")
         print(f"Reason: {e}")
         return
 
-    # Process subsequent chunks using the refine prompt, appending to the file
+    # Process subsequent chunks using the refine prompt
     total_chunks = len(docs)
     for i in range(1, total_chunks):
         print(f"Refining narrative with chunk {i + 1} of {total_chunks}...")
@@ -196,18 +173,13 @@ def main():
                     text=docs[i].page_content,
                 )
             )
-            with open(args.save_summary, "a", encoding="utf-8") as f: # Appending to the file
-                f.write(current_narrative)
-
-            # Reset current_narrative to just the last output to keep it within the context window
-            current_narrative = current_narrative
-            
         except Exception as e:
             print(f"Error refining narrative with chunk {i + 1}.")
             print(f"Reason: {e}")
+            # Note: The process will stop, but the narrative up to this point will still be saved.
             break # Stop processing if an error occurs
 
-    # 6. Apply Instructions to the Final Narrative (Separate Step)
+    # Save the final generated narrative to the specified file
     # ==============================================================================
     print("\n" + "="*50)
     print("Applying final instructions to the detailed narrative...")
@@ -222,7 +194,6 @@ def main():
         print(f"Reason: {e}")
         return
 
-    # This prompt is kept to ensure no additional commentary is added
     instructions_prompt_template = """
     You have a detailed narrative and a set of instructions.
     Your task is to apply these instructions to the narrative and provide only the result.
@@ -241,7 +212,6 @@ def main():
     final_output = llm.invoke(
         instructions_prompt.format(
             narrative=final_narrative, 
-            instructions=instructions_text
         )
     )
 
