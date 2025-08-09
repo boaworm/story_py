@@ -96,7 +96,7 @@ def main():
         "--chunk_size",
         type=int,
         default=75000,
-        help="The maximum size of each text chunk (in characters). Should be less than the model's context window.",
+        help="The maximum size of each background story text chunk (in characters). Should be less than the model's context window.",
     )
 
     parser.add_argument(
@@ -211,7 +211,6 @@ def main():
     )
     
     # Process the first chunk to create the initial narrative and write it to file
-    print("Processing initial chunk to create the story background summary...")
     save_summary_path = args.save_summary
     if Path(save_summary_path).exists():
         save_summary_path = get_incremented_filename(save_summary_path)
@@ -224,8 +223,7 @@ def main():
         length_function=len,
     )
     docs = text_splitter.create_documents([story_text])
-
-    print(f"Original text split into {len(docs)} chunks.")
+    print(f"Refining background story with chunk 1 of {len(docs)}...")
 
     try:
         initial_narrative = llm.invoke(
@@ -332,12 +330,10 @@ def main():
     whole_new_chapter = ""
     summary_plus_new_story = full_summary_text
 
-    # Truncate new chapter file
-    # Path(args.new_chapter).unlink(missing_ok=True)
-    event_chunks = list(chunk_list(key_events, key_event_chunk_size))
+    event_chunks = list(chunk_list(key_events, args.key_event_chunk_size))
 
     for idx, chunk in enumerate(event_chunks):
-        print(f"Generating story section for key events {idx*key_event_chunk_size+1}-{idx*key_event_chunk_size+len(chunk)} [chunk {idx+1} of {len(event_chunks)}]...")
+        print(f"Generating story section for key events {idx*args.key_event_chunk_size+1}-{idx*args.key_event_chunk_size+len(chunk)} [chunk {idx+1} of {len(event_chunks)}]...")
         key_events_str = "\n".join(f"- {event}" for event in chunk)
         prompt = chunk_prompt.format(previous_story=summary_plus_new_story, key_events=key_events_str)
         try:
