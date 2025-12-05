@@ -1,16 +1,14 @@
 # Import necessary libraries
 import argparse
 import os
-from pathlib import Path
-import time
-import re
-
-# LangChain imports
-from langchain_ollama import OllamaLLM
-from langchain.prompts import PromptTemplate
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+# from langchain.prompts import PromptTemplate
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-
+import time
+from pathlib import Path
+import re 
 
 def count_tokens(text: str) -> int:
     """
@@ -149,17 +147,15 @@ def main():
     # ==============================================================================
     stop_tokens = ["<|im_end|>", "<|end_of_text|>", "<|eot_id|>"]
     try:
-        llm = OllamaLLM(
+        llm = ChatOpenAI(
+            openai_api_base="http://localhost:1234/v1",
+            openai_api_key="lm-studio",  # LM Studio does not require a real key
             model=args.model,
-            base_url=args.ollama_url,
             temperature=1,
-            max_tokens=-1,
-            num_predict=-1, # Generate max number of tokens
-            stop=stop_tokens, # Prevent the input prompt from being returned
-            num_ctx=128000, # 65000, # 32768        
+            max_tokens=4096,  # Adjust as needed for LM Studio
         )
     except Exception as e:
-        print(f"Failed to connect to Ollama. Please ensure the service is running at {args.ollama_url} and the model '{args.model}' is downloaded.")
+        print(f"Failed to connect to LM Studio at http://localhost:1234/v1 and the model '{args.model}'.")
         print(f"Error: {e}")
         return
 
@@ -233,8 +229,8 @@ def main():
             )
         )
         with open(save_summary_path, "w", encoding="utf-8") as f:
-            f.write(initial_narrative)
-        current_narrative = initial_narrative
+            f.write(initial_narrative.content)
+        current_narrative = initial_narrative.content
     except Exception as e:
         print("'\nError processing the first chunk.")
         print(f"Reason: {e}")
@@ -247,12 +243,13 @@ def main():
     for i in range(1, total_chunks):
         print(f"Refining background story with chunk {i + 1} of {total_chunks}...")
         try:
-            current_narrative = llm.invoke(
+            current_narrative_message = llm.invoke(
                 refine_prompt.format(
                     current_story=current_narrative,
                     new_story=docs[i].page_content,
                 )
             )
+            current_narrative = current_narrative_message.content
             with open(save_summary_path, "a", encoding="utf-8") as f: # Appending to the file
                 f.write(current_narrative)
             
@@ -340,8 +337,8 @@ def main():
         prompt = chunk_prompt.format(previous_story=summary_plus_new_story, key_events=key_events_str)
         try:
             new_story_section = llm.invoke(prompt)
-            whole_new_chapter += new_story_section.strip() + "\n\n"
-            summary_plus_new_story += "\nxx\n" + new_story_section.strip()
+            whole_new_chapter += new_story_section.content.strip() + "\n\n"
+            summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
         except Exception as e:
             print(f"Error generating story section for chunk {idx+1}: {e}")
             break
