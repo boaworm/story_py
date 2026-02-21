@@ -61,7 +61,7 @@ def main():
     # 1. Argument Parsing
     # ==============================================================================
     parser = argparse.ArgumentParser(
-        description="Rewrite a large text file using LangChain and Ollama with a 'refine' chain."
+        description="Rewrite a large text file using LangChain and LM Studio with a 'refine' chain."
     )
     parser.add_argument(
         "--story",
@@ -80,14 +80,14 @@ def main():
         "--model",
         type=str,
         default="gemma3:27b",
-        help="The Ollama model name to use (e.g., 'gemma3:27b').",
+        help="The model name to use (e.g., 'gemma3:27b').",
     )
 
     parser.add_argument(
-        "--ollama_url",
+        "--api_url",
         type=str,
-        default="http://localhost:11434",
-        help="The URL for the Ollama service.",
+        default="http://localhost:1234/v1",
+        help="The URL for the local LLM service (default: LM Studio port 1234).",
     )
 
     parser.add_argument(
@@ -108,7 +108,7 @@ def main():
         "--save_summary",
         type=str,
         default="summary.txt",
-        help="File path to save the generated detailed narrative to. This file will be appended to as the narrative is built.",
+        help="File path to save the generated detailed narrative to. This file will be overwritten with the final summary.",
     )
 
     parser.add_argument(
@@ -148,14 +148,14 @@ def main():
     stop_tokens = ["<|im_end|>", "<|end_of_text|>", "<|eot_id|>"]
     try:
         llm = ChatOpenAI(
-            openai_api_base="http://localhost:1234/v1",
+            openai_api_base=args.api_url,
             openai_api_key="lm-studio",  # LM Studio does not require a real key
             model=args.model,
             temperature=1,
-            max_tokens=4096,  # Adjust as needed for LM Studio
+            max_tokens=-1,  # Adjust as needed for LM Studio
         )
     except Exception as e:
-        print(f"Failed to connect to LM Studio at http://localhost:1234/v1 and the model '{args.model}'.")
+        print(f"Failed to connect to the LLM service at {args.api_url} and the model '{args.model}'.")
         print(f"Error: {e}")
         return
 
@@ -192,6 +192,7 @@ def main():
     You are an expert at creating detailed summary. Your task is to continue the following summary by seamlessly integrating a new chunk of text.
     Your goal is to build upon the existing summary. 
     Do not condense; instead, build upon the existing story with details from the new text.
+    Ensure the new chapter being written does not contain chunks of duplicate story.
     Avoid adding details that are already present in the existing narrative.
     
     Current story summary:
@@ -250,7 +251,7 @@ def main():
                 )
             )
             current_narrative = current_narrative_message.content
-            with open(save_summary_path, "a", encoding="utf-8") as f: # Appending to the file
+            with open(save_summary_path, "w", encoding="utf-8") as f: # Overwriting the file with the latest full summary
                 f.write(current_narrative)
             
         except Exception as e:

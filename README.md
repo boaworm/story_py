@@ -14,22 +14,21 @@ Python will use LangGraph and the configured/local LLM to parse and learn the ba
 You can then append the new story line/chapter to the background.txt file, update instructions.txt with new events, and keep going.
 
 # Dependencies
-This assumes you are running ollama locally, and have an LLM loaded. By default, it looks for gemma3:27b
-Use the argument to change to a different model if you want.
+This assumes you are running LM Studio locally, and have an LLM loaded. By default, it looks for gemma3:27b at http://localhost:1234/v1
+Use the argument to change to a different model or API URL if you want.
 
 Note that I have optimized this for a Mac Studio M1 Max with 64GB ram, so i am using the full 128k context window. This uses around 28GB of RAM. 
 
 Depending on your hardware, you may want to change that. Locate the llm section and update as per your needs:
 
-```
-try:
-        llm = OllamaLLM(
+```python
+    try:
+        llm = ChatOpenAI(
+            openai_api_base=args.api_url,
+            openai_api_key="lm-studio",
             model=args.model,
-            base_url=args.ollama_url,
             temperature=1,
-            max_tokens=-1,
-            num_predict=-1, # Generate max number of tokens
-            num_ctx=128000, # 65000, # 32768        
+            max_tokens=4096,
         )
 ```
 
@@ -48,7 +47,7 @@ You can obviously do this quite a lot faster using ChatGTP or Gemini or aistudio
 ## Input chunking
 --chunk_size allows you to et the number of tokens to handle when breaking up the input into smaller pieces. 
 If your context window is smaller than your full story line, you set this to something of an appropriate size so your LLM Context can handle it.
-By default it is 75000, as gemma3:27b can handle 128k tokens.
+By default it is 75000, as gemma3:27b can handle 128k tokens. Ensure LM Studio's context length is set appropriately.
 
 ## Output chunking
 Given the outout of each query to the LLM is limited in the number of characters it can produce, i have added a chunking concept.
