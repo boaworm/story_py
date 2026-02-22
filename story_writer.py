@@ -67,7 +67,7 @@ def main():
         "--story",
         type=str,
         required=True,
-        help="Path to the large text file to be rewritten.",
+        help="Path to the static lore/background text file.",
     )
     parser.add_argument(
         "--instructions",
@@ -89,41 +89,6 @@ def main():
         default="http://localhost:1234/v1",
         help="The URL for the local LLM service (default: LM Studio port 1234).",
     )
-
-    parser.add_argument(
-        "--chunk_size",
-        type=int,
-        default=75000,
-        help="The maximum size of each background story text chunk (in characters). Should be less than the model's context window.",
-    )
-
-    parser.add_argument(
-        "--chunk_overlap",
-        type=int,
-        default=10000,
-        help="The number of characters to overlap between chunks to maintain context.",
-    )
-
-    parser.add_argument(
-        "--save_summary",
-        type=str,
-        default="summary.txt",
-        help="File path to save the generated detailed narrative to. This file will be overwritten with the final summary.",
-    )
-
-    parser.add_argument(
-        "--new_chapter",
-        type=str,
-        default="new_chapter.txt",
-        help="Optional file path to save the final output after instructions are applied.",
-    )
-
-    parser.add_argument(
-        "--summary_length",
-        type=int,
-        default=75000,
-        help="Optional parameter to define the length of the summary.",
-    )
     
     parser.add_argument(
         "--key_event_chunk_size",
@@ -132,12 +97,18 @@ def main():
         help="Optional parameter to the number of key events to process in each iteration. Lower number = longer story.",
     )
     
+    parser.add_argument(
+        "--chapter",
+        type=int,
+        default=None,
+        help="Optional. Specify a chapter number to rebuild. If provided, it reads chapterN_instructions.txt and builds story using previous chapter summaries.",
+    )
     
     args = parser.parse_args()
 
     # Verify that the files exist
     if not Path(args.story).is_file():
-        print(f"Error: The story file '{args.story}' was not found.")
+        print(f"Error: The static lore file '{args.story}' was not found.")
         return
     if not Path(args.instructions).is_file():
         print(f"Error: The instructions file '{args.instructions}' was not found.")
@@ -161,120 +132,94 @@ def main():
 
 
 
-    # Narrative Retelling Process (Refine Chain for Full Narrative)
+    # Narrative Retelling Process (Load Background and Previous Chapter Summaries)
     # ==============================================================================
-    length_constraint_str = f"The final narrative should be a detailed, comprehensive retelling of around {args.summary_length} tokens."
 
-    # Load the large story file
+    # Load the static lore file
     with open(args.story, "r", encoding="utf-8") as f:
-        story_text = f.read()
+        static_lore = f.read()
 
-    # Define a prompt for the initial chunk
-    initial_prompt_template = """
-    You are an expert at creating detailed factual summaries from source material. 
-    Create a comprehensive recap of the following text, focusing on all key plot points, characters, and settings. 
-    Your goal is to be expansive, not concise.
-    Remove all extra words, padding, repeated descriptions etc. 
-    Retain factual statements about characters, places, events and encounters.
-    The summary should not be written as a readable story, but as a detailed narrative that captures all essential elements.
-    {length_constraint}
+    # Find and load all chapter summaries
+    summary_files = []
+    import glob
+    for file in glob.glob("chapter*_summary.txt"):
+        match = re.search(r"chapter(\d+)_summary\.txt", file)
+        if match:
+            chapter_num = int(match.group(1))
+            summary_files.append((chapter_num, file))
     
-    Text: "{text}"
-    
-    DETAILED NARRATIVE:"""
-    initial_prompt = PromptTemplate(
-        input_variables=["text", "length_constraint"],
-        template=initial_prompt_template
-    )
+    # Sort them by chapter number
+    summary_files.sort()
 
-    # Define a prompt for refining the narrative with subsequent chunks
-    refine_prompt_template = """
-    You are an expert at creating detailed summary. Your task is to continue the following summary by seamlessly integrating a new chunk of text.
-    Your goal is to build upon the existing summary. 
-    Do not condense; instead, build upon the existing story with details from the new text.
-    Ensure the new chapter being written does not contain chunks of duplicate story.
-    Avoid adding details that are already present in the existing narrative.
-    
-    Current story summary:
-    "{current_story}"
-    
-    New story to Integrate:
-    "{new_story}"
-    
-    Updated Detailed Narrative:"""
-    refine_prompt = PromptTemplate(
-        input_variables=["existing_answer", "text"], 
-        template=refine_prompt_template
-    )
-    
-    # Process the first chunk to create the initial narrative and write it to file
-    save_summary_path = args.save_summary
-    if Path(save_summary_path).exists():
-        save_summary_path = get_incremented_filename(save_summary_path)
+    # Determine the chapter number to build
+    if args.chapter is not None:
+        next_chapter_num = args.chapter
+        print(f"Rebuilding chapter {next_chapter_num} as requested by --chapter flag.")
+    else:
+        next_chapter_num = 1
+        existing_chapters = []
+        for file in glob.glob("chapter*_summary.txt"):
+            match = re.search(r"chapter(\d+)_summary\.txt", file)
+            if match:
+                existing_chapters.append(int(match.group(1)))
+        
+        if existing_chapters:
+            next_chapter_num = max(existing_chapters) + 1
 
-    print(f"Generated summary will be saved to: {save_summary_path}")
+    # Now load the ongoing story, only including chapters BEFORE the target chapter
+    full_summary_text = static_lore + "\n\n"
+    loaded_summaries = 0
+    if summary_files:
+        print(f"Loading ongoing story up to chapter {next_chapter_num - 1}:")
+        for chapter_num, summary_file in summary_files:
+            if chapter_num < next_chapter_num:
+                print(f"- Loading {summary_file}")
+                with open(summary_file, "r", encoding="utf-8") as f:
+                    full_summary_text += f"\n--- Chapter {chapter_num} Summary ---\n"
+                    full_summary_text += f.read() + "\n"
+                loaded_summaries += 1
+                
+    if loaded_summaries == 0:
+        print("No previous chapter summaries loaded. Starting fresh from static lore.")
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=args.chunk_size,
-        chunk_overlap=args.chunk_overlap,
-        length_function=len,
-    )
-    docs = text_splitter.create_documents([story_text])
-    print(f"Refining background story with chunk 1 of {len(docs)}...")
+    new_chapter_file = f"chapter{next_chapter_num}_story.txt"
+    new_summary_file = f"chapter{next_chapter_num}_summary.txt"
+    new_instructions_file = f"chapter{next_chapter_num}_instructions.txt"
 
-    try:
-        initial_narrative = llm.invoke(
-            initial_prompt.format(
-                text=docs[0].page_content, 
-                length_constraint=length_constraint_str
-            )
-        )
-        with open(save_summary_path, "w", encoding="utf-8") as f:
-            f.write(initial_narrative.content)
-        current_narrative = initial_narrative.content
-    except Exception as e:
-        print("'\nError processing the first chunk.")
-        print(f"Reason: {e}")
-        return
-
-    # Process subsequent chunks using the refine prompt, appending to the file
-    # As each chunk does not overlap (by much), we append to the summary file. 
-    # This way, we can create a larger summary without overflowing the context. 
-    total_chunks = len(docs)
-    for i in range(1, total_chunks):
-        print(f"Refining background story with chunk {i + 1} of {total_chunks}...")
-        try:
-            current_narrative_message = llm.invoke(
-                refine_prompt.format(
-                    current_story=current_narrative,
-                    new_story=docs[i].page_content,
-                )
-            )
-            current_narrative = current_narrative_message.content
-            with open(save_summary_path, "w", encoding="utf-8") as f: # Overwriting the file with the latest full summary
-                f.write(current_narrative)
-            
-        except Exception as e:
-            print(f"Error refining narrative with chunk {i + 1}.")
-            print(f"Reason: {e}")
-            break # Stop processing if an error occurs
-
-
-
-    # Generate the new story chapter, expanding on story-background
+    # Generate the new story chapter
     # ==============================================================================
-    # Load the large story summary
     print("\n" + "="*50)
-    print("Applying provided instructions to create a new chapter to the story...")
+    print(f"Applying provided instructions to create {new_chapter_file}...")
     print("="*50)
 
-    full_summary_text = ""
-    with open(args.save_summary, "r", encoding="utf-8") as f:
-        full_summary_text = f.read()
+    # Load the instructions
+    if args.chapter is not None:
+        # If rebuilding an existing chapter, we assume its instructions already exist.
+        if Path(new_instructions_file).is_file():
+            print(f"Reading target instructions from {new_instructions_file}")
+            with open(new_instructions_file, "r", encoding="utf-8") as f:
+                instructions_text = f.read()
+        else:
+            print(f"Error: Could not find {new_instructions_file} to rebuild chapter {next_chapter_num}.")
+            return
+    else:
+        # If building a new chapter, read from args.instructions and copy it to the new_instructions_file
+        with open(args.instructions, "r", encoding="utf-8") as f:
+            instructions_text = f.read()
+            
+        if next_chapter_num > 1:
+            prev_instructions_file = f"chapter{next_chapter_num - 1}_instructions.txt"
+            if Path(prev_instructions_file).is_file():
+                with open(prev_instructions_file, "r", encoding="utf-8") as f:
+                    prev_instructions_text = f.read()
+                if instructions_text.strip() == prev_instructions_text.strip():
+                    print(f"No new instructions have been given. Current instructions were used to generate chapter {next_chapter_num - 1}.")
+                    return
 
-    # Load the instructions from the instructions file
-    with open(args.instructions, "r", encoding="utf-8") as f:
-        instructions_text = f.read()
+        # Copy the instructions to the chapter-specific instructions file
+        with open(new_instructions_file, "w", encoding="utf-8") as f:
+            f.write(instructions_text)
+            print(f"Saved instructions to {new_instructions_file}")
 
     # Extract key events from instructions.txt
     key_events = []
@@ -296,8 +241,8 @@ def main():
             yield lst[i:i + n]
 
 
-    # Truncate new chapter file
-    Path(args.new_chapter).unlink(missing_ok=True)
+    # Truncate new chapter file if it happens to exist
+    Path(new_chapter_file).unlink(missing_ok=True)
 
     # Prompt template for each chunk
     chunk_prompt_template = (
@@ -311,8 +256,8 @@ def main():
         "Avoid too complicated new words.\n"
         "Do not introduce new characters or events unless explicitly requested.\n"
         "If I describe a character, do not assume they are meeting them.\n"
-        "If I describe a place, do not assume they will travel there.\n"
-        "If I describe a creature or other being, do not assume they will meet, see or encounter them.\n"
+        "If i describe a place, do not assume they will travel there.\n"
+        "If i describe a creature or other being, do not assume they will meet, see or encounter them.\n"
         "Do not take the story line beyond what is described in the key events.\n"
         "Do not add titles or headers.\n"
         "ONLY OUTPUT THE NEW STORY, directly related to the key events. Do not repeat anything from the previous story.\n"
@@ -332,7 +277,12 @@ def main():
 
     event_chunks = list(chunk_list(key_events, args.key_event_chunk_size))
 
+    # Mark the end of the reading phase before we start generating
+    reading_time_end = time.time()
+    chunk_times = []
+
     for idx, chunk in enumerate(event_chunks):
+        chunk_start = time.time()
         print(f"Generating story section for key events {idx*args.key_event_chunk_size+1}-{idx*args.key_event_chunk_size+len(chunk)} [chunk {idx+1} of {len(event_chunks)}]...")
         key_events_str = "\n".join(f"- {event}" for event in chunk)
         prompt = chunk_prompt.format(previous_story=summary_plus_new_story, key_events=key_events_str)
@@ -343,26 +293,78 @@ def main():
         except Exception as e:
             print(f"Error generating story section for chunk {idx+1}: {e}")
             break
+            
+        chunk_end = time.time()
+        chunk_times.append(chunk_end - chunk_start)
     
-    print(f"New chapter written to {args.new_chapter}.")
-    with open(args.new_chapter, "w", encoding="utf-8") as f:
+    print(f"New chapter written to {new_chapter_file}.")
+    with open(new_chapter_file, "w", encoding="utf-8") as f:
         f.write(whole_new_chapter.strip() + "\n\n")
-        f.close()
 
     ## Print the whole new chapter to console    
     print("\n" + "="*50)
     print(whole_new_chapter)
     print("="*50)
 
+    # 7. Generate a summary of the newly written chapter
+    # ==============================================================================
+    print("\n" + "="*50)
+    print(f"Generating factual summary of {new_chapter_file}...")
+    print("="*50)
+
+    chapter_summary_prompt_template = """
+    You are an expert at creating detailed factual summaries from source material.
+    Summarize the events of the following new chapter. 
+    Retain all factual details, names, locations, items, places visited, experiences gained and actions. 
+    Remove flowery language, dialogue, and pacing. 
+    Make it a dense factual record of what happened in this exact chapter.
+    Output ONLY the summary. Do not include any introductory text, titles, or conversational filler like "Here is the summary".
+    
+    CHAPTER TEXT:
+    "{chapter_text}"
+    
+    DENSE FACTUAL SUMMARY:"""
+    
+    chapter_summary_prompt = PromptTemplate(
+        input_variables=["chapter_text"],
+        template=chapter_summary_prompt_template
+    )
+
+    summary_start = time.time()
+    summary_end = summary_start
+    try:
+        new_summary_message = llm.invoke(
+            chapter_summary_prompt.format(chapter_text=whole_new_chapter)
+        )
+        new_summary_text = new_summary_message.content.strip()
+        
+        with open(new_summary_file, "w", encoding="utf-8") as f:
+            f.write(new_summary_text + "\n")
+            
+        print(f"Summary of new chapter written to {new_summary_file}.")
+        summary_end = time.time()
+    except Exception as e:
+        print(f"Error generating summary for the new chapter: {e}")
+
     
     # 8. Calculate and print the total execution time
     # ==============================================================================
     end_time = time.time()
-    elapsed_time = end_time - start_time
-    hours = int(elapsed_time // 3600)
-    minutes = int((elapsed_time % 3600) // 60)
-    seconds = int(elapsed_time % 60)
-    print(f"\nTotal script execution time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    
+    def format_time(elapsed_time):
+        hours = int(elapsed_time // 3600)
+        minutes = int((elapsed_time % 3600) // 60)
+        seconds = int(elapsed_time % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    print(f"\nReading background and new instructions: {format_time(reading_time_end - start_time)}")
+    for i, chunk_duration in enumerate(chunk_times):
+        print(f"Generating story chunk {i+1} of {len(chunk_times)}: {format_time(chunk_duration)}")
+        
+    if summary_end > summary_start:
+        print(f"Summarizing full story: {format_time(summary_end - summary_start)}")
+        
+    print(f"Total script execution time: {format_time(end_time - start_time)}")
 
 if __name__ == "__main__":
     main()
