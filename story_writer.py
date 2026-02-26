@@ -76,12 +76,6 @@ def main():
         help="Path to the file containing instructions for the final output.",
     )
     
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="gemma3:27b",
-        help="The model name to use (e.g., 'gemma3:27b').",
-    )
 
     parser.add_argument(
         "--api_url",
@@ -121,12 +115,13 @@ def main():
         llm = ChatOpenAI(
             openai_api_base=args.api_url,
             openai_api_key="lm-studio",  # LM Studio does not require a real key
-            model=args.model,
+            model="default",  # LM Studio uses whichever model is currently loaded
             temperature=1,
             max_tokens=-1,  # Adjust as needed for LM Studio
         )
+        print(f"Connected to LLM at {args.api_url}")
     except Exception as e:
-        print(f"Failed to connect to the LLM service at {args.api_url} and the model '{args.model}'.")
+        print(f"Failed to connect to the LLM service at {args.api_url}.")
         print(f"Error: {e}")
         return
 
@@ -279,7 +274,8 @@ def main():
 
     # Mark the end of the reading phase before we start generating
     reading_time_end = time.time()
-    chunk_times = []
+    chunk_metrics = []
+    actual_model_name = "Unknown"
 
     for idx, chunk in enumerate(event_chunks):
         chunk_start = time.time()
@@ -295,7 +291,24 @@ def main():
             break
             
         chunk_end = time.time()
-        chunk_times.append(chunk_end - chunk_start)
+        duration = chunk_end - chunk_start
+        
+        # Capture token usage from LLM response metadata
+        tokens = 0
+        try:
+            if hasattr(new_story_section, 'response_metadata') and 'token_usage' in new_story_section.response_metadata:
+                tokens = new_story_section.response_metadata['token_usage'].get('completion_tokens', 0)
+            else:
+                # Fallback to word count approximation if metadata is missing
+                tokens = count_tokens(new_story_section.content)
+        except Exception:
+            tokens = count_tokens(new_story_section.content)
+            
+        # Capture actual model name if available
+        if hasattr(new_story_section, 'response_metadata'):
+            actual_model_name = new_story_section.response_metadata.get('model_name', actual_model_name)
+            
+        chunk_metrics.append({"duration": duration, "tokens": tokens})
     
     print(f"New chapter written to {new_chapter_file}.")
     with open(new_chapter_file, "w", encoding="utf-8") as f:
@@ -343,8 +356,25 @@ def main():
             
         print(f"Summary of new chapter written to {new_summary_file}.")
         summary_end = time.time()
+        
+        # Capture summary token usage
+        summary_tokens = 0
+        try:
+            if hasattr(new_summary_message, 'response_metadata') and 'token_usage' in new_summary_message.response_metadata:
+                summary_tokens = new_summary_message.response_metadata['token_usage'].get('completion_tokens', 0)
+            else:
+                summary_tokens = count_tokens(new_summary_text)
+        except Exception:
+            summary_tokens = count_tokens(new_summary_text)
+            
+        # Capture actual model name if available
+        if hasattr(new_summary_message, 'response_metadata'):
+            actual_model_name = new_summary_message.response_metadata.get('model_name', actual_model_name)
+            
+        summary_metrics = {"duration": summary_end - summary_start, "tokens": summary_tokens}
     except Exception as e:
         print(f"Error generating summary for the new chapter: {e}")
+        summary_metrics = None
 
     
     # 8. Calculate and print the total execution time
@@ -358,13 +388,35 @@ def main():
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     print(f"\nReading background and new instructions: {format_time(reading_time_end - start_time)}")
-    for i, chunk_duration in enumerate(chunk_times):
-        print(f"Generating story chunk {i+1} of {len(chunk_times)}: {format_time(chunk_duration)}")
+    
+    total_gen_tokens = 0
+    total_gen_duration = 0
+    
+    for i, metrics in enumerate(chunk_metrics):
+        duration = metrics["duration"]
+        tokens = metrics["tokens"]
+        total_gen_tokens += tokens
+        total_gen_duration += duration
+        tps = tokens / duration if duration > 0 else 0
+        print(f"Generating story chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | {tokens} tokens ({tps:.2f} t/s)")
         
-    if summary_end > summary_start:
-        print(f"Summarizing full story: {format_time(summary_end - summary_start)}")
+    if summary_metrics:
+        duration = summary_metrics["duration"]
+        tokens = summary_metrics["tokens"]
+        total_gen_tokens += tokens
+        total_gen_duration += duration
+        tps = tokens / duration if duration > 0 else 0
+        print(f"Summarizing full story: {format_time(duration)} | {tokens} tokens ({tps:.2f} t/s)")
         
-    print(f"Total script execution time: {format_time(end_time - start_time)}")
+    if total_gen_duration > 0:
+        avg_tps = total_gen_tokens / total_gen_duration
+        print(f"\nGeneration Summary:")
+        print(f"  Model actually used:    {actual_model_name}")
+        print(f"  Total tokens generated: {total_gen_tokens}")
+        print(f"  Total generation time:  {format_time(total_gen_duration)}")
+        print(f"  Average performance:    {avg_tps:.2f} t/s")
+
+    print(f"\nTotal script execution time: {format_time(end_time - start_time)}")
 
 if __name__ == "__main__":
     main()
