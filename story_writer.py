@@ -143,24 +143,51 @@ def main():
         if match:
             chapter_num = int(match.group(1))
             summary_files.append((chapter_num, file))
-    
+
     # Sort them by chapter number
     summary_files.sort()
 
-    # Determine the chapter number to build
-    next_chapter_num = 1
-    if args.chapter is not None:
+    # Check if instructions file is a chapter regeneration request
+    instructions_file_name = Path(args.instructions).name
+    regenerate_match = re.match(r"^chapter(\d+)_instructions\.txt$", instructions_file_name)
+    regenerating_chapter = False
+
+    if regenerate_match and args.chapter is None:
+        # Regenerating a specific chapter based on filename
+        regenerate_chapter_num = int(regenerate_match.group(1))
+        regenerating_chapter = True
+        next_chapter_num = regenerate_chapter_num
+
+        print(f"\nRegenerating chapter {regenerate_chapter_num}...")
+
+        # Delete existing story and summary files
+        story_file = Path(f"chapter{regenerate_chapter_num}_story.txt")
+        summary_file = Path(f"chapter{regenerate_chapter_num}_summary.txt")
+
+        if story_file.exists():
+            story_file.unlink()
+            print(f"Deleted existing {story_file.name}")
+
+        if summary_file.exists():
+            summary_file.unlink()
+            print(f"Deleted existing {summary_file.name}")
+    elif args.chapter is not None:
+        # Explicit rebuild via --chapter flag
         next_chapter_num = args.chapter
+        regenerating_chapter = True
         print(f"Rebuilding chapter {next_chapter_num} as requested.")
     else:
+        # Create new chapter (default behavior)
         existing_chapters = []
         for file in glob.glob("chapter*_summary.txt"):
             match = re.search(r"chapter(\d+)_summary\.txt", file)
             if match:
                 existing_chapters.append(int(match.group(1)))
-        
+
         if existing_chapters:
             next_chapter_num = max(existing_chapters) + 1
+        else:
+            next_chapter_num = 1
 
     # Load the ongoing story context
     full_summary_text = static_lore + "\n\n"
@@ -180,17 +207,25 @@ def main():
     new_instructions_file = f"chapter{next_chapter_num}_instructions.txt"
 
     # Load and process instructions
-    if args.chapter is not None:
-        if Path(new_instructions_file).is_file():
-            with open(new_instructions_file, "r", encoding="utf-8") as f:
+    if regenerating_chapter:
+        # Regenerating an existing chapter
+        if regenerate_match:
+            # Instructions file was specified directly (chapterN_instructions.txt)
+            with open(args.instructions, "r", encoding="utf-8") as f:
                 instructions_text = f.read()
         else:
-            print(f"Error: Could not find {new_instructions_file}")
-            return
+            # Using --chapter flag, load from expected instructions file
+            if Path(new_instructions_file).is_file():
+                with open(new_instructions_file, "r", encoding="utf-8") as f:
+                    instructions_text = f.read()
+            else:
+                print(f"Error: Could not find {new_instructions_file}")
+                return
     else:
+        # Creating a new chapter
         with open(args.instructions, "r", encoding="utf-8") as f:
             instructions_text = f.read()
-        
+
         if next_chapter_num > 1:
             prev_instructions_file = f"chapter{next_chapter_num - 1}_instructions.txt"
             if Path(prev_instructions_file).is_file():
@@ -199,7 +234,8 @@ def main():
                 if instructions_text.strip() == prev_instructions_text.strip():
                     print(f"No new instructions. Using previous for chapter {next_chapter_num - 1}")
                     return
-        
+
+        # Save instructions for this new chapter
         with open(new_instructions_file, "w", encoding="utf-8") as f:
             f.write(instructions_text)
 
@@ -241,17 +277,21 @@ def main():
     chunk_prompt_template = (
         "INSTRUCTION\n"
         "You are an expert at writing engaging children's fantasy stories. \n"
-        "Write a detailed, coherent chapter covering key events IN ORDER. \n"
+        "Write ONLY the next section continuing from where the previous text ended. \n"
+        "Cover ONLY the key events listed below - nothing more, nothing less.\n"
         "Each event MUST happen sequentially as listed. Do not reorder.\n"
-        "Using previous story context, continue narrative chronologically.\n"
+        "DO NOT repeat or rewrite any part of the previous story.\n"
+        "DO NOT go beyond the last key event listed.\n"
+        "DO NOT create a conclusion or wrap up the story unless the key events indicate the story ends.\n"
         "Use simple language, short to medium sentences.\n"
         "Do not introduce new characters or events unless requested.\n"
         "Do not add titles or headers.\n"
-        "ONLY OUTPUT THE NEW STORY, directly related to key events.\n"
+        "ONLY OUTPUT THE NEW CONTINUATION, directly related to key events below.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
         "END OF BACKGROUND\n\n"
         "BEGINNING OF KEY EVENTS (MUST BE IN ORDER)\n{key_events}\n"
         "END OF KEY EVENTS\n\n"
+        "Write the continuation now, starting immediately after where the previous text ended:\n"
     )
 
     chunk_prompt = PromptTemplate(
