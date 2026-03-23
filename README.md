@@ -1,61 +1,98 @@
 # story_py
-Write a continuously evolving childrens story using LLMs, Python, LangGraph
+Write a continuously evolving children's story using LLMs, Python, and LangChain.
 
-# Introduction
+## Introduction
 
-This is a python script that can be used to build an evolving childrens story.
+This Python script is designed to build an evolving children's story chapter by chapter. It uses LangChain to interface with a local LLM (like LM Studio) to process a static lore background, maintain context through previous chapter summaries, and generate new story sections based on specific "Key Events".
 
-You fill in the background in the story_background.txt file
-You fill in your new events in the instructions.txt file
-You then run the ./run.sh script 
+## How It Works
 
-Python will use LangGraph and the configured/local LLM to parse and learn the background story, after which it will print out the new story line.
+The script follows an automated chapter progression:
+1. **Static Lore**: Defined in a background file (e.g., `story_background.txt`).
+2. **Context Progression**: It automatically loads all existing `chapter*_summary.txt` files to maintain continuity.
+3. **Instructions**: You provide a file (e.g., `instructions.txt`) containing the plot points for the next chapter.
+4. **Generation**: The script chunks the key events and generates the story in sequence, saving it to `chapterN_story.txt`.
+5. **Summarization**: After generating a chapter, it creates a dense factual summary and saves it to `chapterN_summary.txt` for use in future chapters.
 
-You can then append the new story line/chapter to the background.txt file, update instructions.txt with new events, and keep going.
+## File Types & Structure
 
-# Dependencies
-This assumes you are running LM Studio locally, and have an LLM loaded. By default, it looks for gemma3:27b at http://localhost:1234/v1
-Use the argument to change to a different model or API URL if you want.
+### 1. `story_background.txt` (The Anchor)
+This is the most critical file for maintaining story coherence. It contains the static lore, world-building, and core character descriptions.
+- **Why it matters**: While the script uses chapter summaries for context, those summaries can lose fine detail over time. The background file acts as the permanent "truth" for the LLM.
+- **Maintenance**: **You should manually update this file periodically.** When a major event happens (e.g., a character gains a new ability, a city is destroyed, or a new main character joins), add a concise note here. This ensures the LLM never "forgets" these foundational changes in future chapters.
 
-Note that I have optimized this for a Mac Studio M1 Max with 64GB ram, so i am using the full 128k context window. This uses around 28GB of RAM. 
+### 2. `instructions.txt` (The Driver)
+This is where you tell the script what happens next. It must contain the "Key Events" section.
+- **Chunking**: The `--key_event_chunk_size` parameter (default: 5) determines how many events are processed in a single LLM prompt. Lower numbers result in more detailed, longer chapters, while higher numbers produce more concise summaries.
+- **Format**: Ensure events are listed between `START OF KEY EVENTS:` and `END OF KEY EVENTS:`.
 
-Depending on your hardware, you may want to change that. Locate the llm section and update as per your needs:
+### 3. `chapterN_story.txt` (The Output)
+These are the generated story chapters. Once generated, they are not read again by the script directly; instead, the script relies on their corresponding summaries.
 
-```python
-    try:
-        llm = ChatOpenAI(
-            openai_api_base=args.api_url,
-            openai_api_key="lm-studio",
-            model=args.model,
-            temperature=1,
-            max_tokens=4096,
-        )
+### 4. `chapterN_summary.txt` (The Context)
+After each chapter is written, the script generates a dense factual summary.
+- **Role**: All previous summaries are loaded at the start of a new chapter to provide the LLM with the "story so far".
+- **Density**: These summaries are intentionally stripped of flowery language to maximize the amount of story context that can fit into the LLM's window.
+
+### 5. `chapterN_instructions.txt` (The Archive)
+The script automatically saves a copy of the instructions used for each chapter. This is useful for rebuilding chapters or tracking your original plot points.
+
+
+### Prerequisites
+- **Python**: Ensure you have Python installed.
+- **Dependencies**: Install required packages via pip:
+  ```bash
+  pip install -r requirements.txt
+  ```
+- **Local LLM**: This script is optimized for **LM Studio**. By default, it looks for an OpenAI-compatible API at `http://localhost:1234/v1`.
+
+### Hardware Note
+The script is optimized for high-memory environments (like a Mac Studio M1 Max with 64GB RAM) to handle large context windows (up to 128k tokens). Depending on your hardware, ensure LM Studio's context length set appropriately.
+
+## Usage
+
+### Instructions Format
+The instructions file must contain a specific section for the script to parse:
+
+With --key_event_chunk_size 4, the script will consume four rows of key events at a time. Depending on the model you use, and the amount of output it produces, you will want to adjust this value. Gemma3-27b and chunk size 4 and 12 lines of key events produces a good childrens story taking 10-15 minutes to read.
+
+```text
+START OF KEY EVENTS:
+Hoby finds a mysterious map.
+The wind picks up, signaling a storm.
+A dragon appears on the horizon.
+They raise the sails and escapes the dragon.
+END OF KEY EVENTS:
 ```
 
-# Sample data
-To make it easier to understand, i have put some sample data in the repo. Obviously you want to update this according to your own needs.
+### Running the Script
+Run the script using the following command structure:
 
-# Performance
-Will obviously depend on your GPU
+```bash
+python story_writer.py --story story_background.txt --instructions instructions.txt
+```
 
-With an M1 Max, it takes me 15 minutes to generate a new chapter at this point, with around 30kb of background.
+### CLI Arguments
+| Argument | Default | Description |
+| :--- | :--- | :--- |
+| `--story` | (Required) | Path to the static lore/background text file. |
+| `--instructions`| (Required) | Path to the file containing instructions for the final output. |
+| `--api_url` | `http://localhost:1234/v1`| The URL for the local LLM service. |
+| `--key_event_chunk_size` | `5` | Number of key events to process in each iteration. Lower = longer story. |
+| `--chapter` | `None` | Specify a chapter number to rebuild using previous summaries. |
 
-You can obviously do this quite a lot faster using ChatGTP or Gemini or aistudio.google.com, but it is fun running it locally. And gemma3:27b is quite good at this (as opposed to gemma3:8b which writes miserable stories).
+## Workflow Example
 
-# Chunking
+1. Update `story_background.txt` with your world's base lore.
+2. Create `instructions.txt` with the events for Chapter 1.
+3. Run `python story_writer.py --story story_background.txt --instructions instructions.txt`.
+   - This creates `chapter1_story.txt`, `chapter1_summary.txt`, and `chapter1_instructions.txt`.
+4. Create a new `instructions.txt` for Chapter 2.
+5. Run the same command again.
+   - The script detects Chapter 1 is done and automatically creates Chapter 2, using the Chapter 1 summary as context.
 
-## Input chunking
---chunk_size allows you to et the number of tokens to handle when breaking up the input into smaller pieces. 
-If your context window is smaller than your full story line, you set this to something of an appropriate size so your LLM Context can handle it.
-By default it is 75000, as gemma3:27b can handle 128k tokens. Ensure LM Studio's context length is set appropriately.
-
-## Output chunking
-Given the outout of each query to the LLM is limited in the number of characters it can produce, i have added a chunking concept.
-By default, it is set to 5, meaning that it will run one prompt for each 5 key events you add in the instructions.txt file.
-
-You can update the chunking size via a config parameter.
-
-So if you set chunking to something higher, you will get less output. If you set chunking to something lower, you will get more output (longer new chapter.txt)
+## Performance
+Performance depends on your GPU/NPU. On an M1 Max, generating a chapter with ~30KB of background context typically takes around 15 minutes. Using larger models like `gemma3:27b` is recommended for higher-quality storytelling.
 
 # Sample run
 story_writer.py --story story_background.txt --instructions instructions.txt --save_summary summary.txt --new_chapter new_chapter.txt --key_event_chunk_size 4 
@@ -83,5 +120,4 @@ They were sailing towards Eärcaraxe, the lair of the dragon. And whatever await
 ==================================================
 
 Total script execution time: 00:45:36
-
 
