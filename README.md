@@ -19,7 +19,7 @@ The script follows an automated chapter progression:
 ### 1. `story_background.txt` (The Anchor)
 This is the most critical file for maintaining story coherence. It contains the static lore, world-building, and core character descriptions.
 - **Why it matters**: While the script uses chapter summaries for context, those summaries can lose fine detail over time. The background file acts as the permanent "truth" for the LLM.
-- **Maintenance**: **You should manually update this file periodically.** When a major event happens (e.g., a character gains a new ability, a city is destroyed, or a new main character joins), add a concise note here. This ensures the LLM never "forgets" these foundational changes in future chapters.
+- **Maintenance**: **You should manually update this file periodically.** When a major event happens (e.g., a character gains a new ability, a city is discovered, or a new main character joins), add a concise note here. This ensures the LLM never "forgets" these foundational changes in future chapters.
 
 ### 2. `instructions.txt` (The Driver)
 This is where you tell the script what happens next. It must contain the "Key Events" section.
