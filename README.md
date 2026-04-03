@@ -55,6 +55,7 @@ The script is optimized for high-memory environments (like a Mac Studio M1 Max w
 The instructions file must contain a specific section for the script to parse:
 
 With --key_event_chunk_size 4, the script will consume four rows of key events at a time. Depending on the model you use, and the amount of output it produces, you will want to adjust this value. Gemma3-27b and chunk size 4 and 12 lines of key events produces a good childrens story taking 10-15 minutes to read.
+**ATTENTION**: Make sure you write your key events in chunks of 4 senetences. If you have a chunk size of 4 and you provide 9 key event lines, the last line alone will make up a whole section, and likely be a lot more "out of scope" than intended. 
 
 ```text
 START OF KEY EVENTS:
@@ -71,6 +72,20 @@ Run the script using the following command structure:
 ```bash
 python story_writer.py --story story_background.txt --instructions instructions.txt
 ```
+
+### Recommended Parameters
+
+**For gemma3-27b:**
+```bash
+python story_writer.py --story story_background.txt --instructions instructions.txt --key_event_chunk_size 4
+```
+
+**For qwen3.5 122b:**
+```bash
+python story_writer.py --api_url http://127.0.0.1:1234 --story story_background.txt --instructions instructions.txt --key_event_chunk_size 12
+```
+
+**Note:** For both models, write your story outline using 12 sentences. The `gemma3-27b` model produces less output per event, so it works best when processing events in chunks of 4. The `qwen3.5 122b` model generates more text, allowing you to ingest all 12 lines as a single chunk.
 
 ### CLI Arguments
 | Argument | Default | Description |

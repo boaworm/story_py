@@ -102,6 +102,34 @@ def main():
         help="Specify a chapter number to rebuild using previous summaries.",
     )
 
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.9,
+        help="LLM sampling temperature (default: 0.9).",
+    )
+
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=0.95,
+        help="LLM top-p nucleus sampling (default: 0.95).",
+    )
+
+    parser.add_argument(
+        "--frequency_penalty",
+        type=float,
+        default=0.25,
+        help="Penalises repeated tokens (default: 0.25). Reduces repetitive phrasing.",
+    )
+
+    parser.add_argument(
+        "--presence_penalty",
+        type=float,
+        default=0.1,
+        help="Penalises repeated topics (default: 0.1). Keeps narrative from circling the same ideas.",
+    )
+
     args = parser.parse_args()
 
     # Verify that the files exist
@@ -120,7 +148,10 @@ def main():
             openai_api_base=args.api_url,
             openai_api_key="lm-studio",
             model="default",
-            temperature=1,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            frequency_penalty=args.frequency_penalty,
+            presence_penalty=args.presence_penalty,
             max_tokens=-1,
         )
         print(f"Connected to LLM at {args.api_url}")
@@ -232,7 +263,7 @@ def main():
                 with open(prev_instructions_file, "r", encoding="utf-8") as f:
                     prev_instructions_text = f.read()
                 if instructions_text.strip() == prev_instructions_text.strip():
-                    print(f"No new instructions. Using previous for chapter {next_chapter_num - 1}")
+                    print(f"Chapter {next_chapter_num - 1} already generated for those instructions.")
                     return
 
         # Save instructions for this new chapter
@@ -275,13 +306,15 @@ def main():
 
     # Prompt template
     chunk_prompt_template = (
+        "/no_think\n"
         "INSTRUCTION\n"
         "You are an expert at writing engaging children's fantasy stories. \n"
         "Write ONLY the next section continuing from where the previous text ended. \n"
-        "Cover ONLY the key events listed below - nothing more, nothing less.\n"
-        "Each event MUST happen sequentially as listed. Do not reorder.\n"
+        "You MUST cover EVERY numbered key event listed below, in order, without skipping any.\n"
+        "Each numbered event is mandatory. Do not skip, merge, or omit any event.\n"
+        "Each event MUST happen sequentially in the order listed. Do not reorder.\n"
         "DO NOT repeat or rewrite any part of the previous story.\n"
-        "DO NOT go beyond the last key event listed.\n"
+        "DO NOT go beyond the last key event listed. End the story with the last key event.\n"
         "DO NOT create a conclusion or wrap up the story unless the key events indicate the story ends.\n"
         "Use simple language, short to medium sentences.\n"
         "Do not introduce new characters or events unless requested.\n"
@@ -289,9 +322,9 @@ def main():
         "ONLY OUTPUT THE NEW CONTINUATION, directly related to key events below.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
         "END OF BACKGROUND\n\n"
-        "BEGINNING OF KEY EVENTS (MUST BE IN ORDER)\n{key_events}\n"
+        "BEGINNING OF KEY EVENTS (MUST ALL BE COVERED, IN ORDER, NONE SKIPPED)\n{key_events}\n"
         "END OF KEY EVENTS\n\n"
-        "Write the continuation now, starting immediately after where the previous text ended:\n"
+        "Write the continuation now, covering every single numbered event above, starting immediately after where the previous text ended:\n"
     )
 
     chunk_prompt = PromptTemplate(
@@ -304,13 +337,13 @@ def main():
 
     event_chunks = list(chunk_list(key_events, args.key_event_chunk_size))
 
-    reading_time_end = time.time()
+    background_tokens = count_tokens(full_summary_text)
     chunk_metrics = []
     actual_model_name = "Unknown"
 
     for idx, chunk in enumerate(event_chunks):
         chunk_start = time.time()
-        key_events_str = "\n".join(f"- {event}" for event in chunk)
+        key_events_str = "\n".join(f"{i+1}. {event}" for i, event in enumerate(chunk))
         prompt = chunk_prompt.format(
             previous_story=summary_plus_new_story,
             key_events=key_events_str
@@ -322,20 +355,26 @@ def main():
         except Exception as e:
             print(f"Error generating chunk {idx+1}: {e}")
             break
-        
+
         chunk_end = time.time()
         duration = chunk_end - chunk_start
-        
-        tokens = 0
+
+        input_tokens = 0
+        output_tokens = 0
         if (metadata := getattr(new_story_section, 'response_metadata', {})) and 'token_usage' in metadata:
-            tokens = metadata['token_usage'].get('completion_tokens', 0)
+            input_tokens = metadata['token_usage'].get('prompt_tokens', 0)
+            output_tokens = metadata['token_usage'].get('completion_tokens', 0)
         else:
-            tokens = count_tokens(new_story_section.content)
-        
+            output_tokens = count_tokens(new_story_section.content)
+
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
-        
-        chunk_metrics.append({"duration": duration, "tokens": tokens})
+
+        chunk_metrics.append({
+            "duration": duration,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        })
 
     print(f"New chapter written to {new_chapter_file}")
     with open(new_chapter_file, "w", encoding="utf-8") as f:
@@ -353,6 +392,7 @@ def main():
     print("="*50)
 
     chapter_summary_prompt_template = (
+        "/no_think\n"
         "You are an expert at creating detailed factual summaries.\n"
         "Summarize the events of the following new chapter.\n"
         "Retain all factual details, names, locations, items, places visited, experiences gained and actions.\n"
@@ -382,10 +422,12 @@ def main():
         summary_end = time.time()
         
         summary_tokens = 0
+        summary_input_tokens = 0
         if metadata := getattr(new_summary_message, 'response_metadata', {}):
             summary_tokens = metadata.get('token_usage', {}).get('completion_tokens', 0)
-        
-        summary_metrics = {"duration": summary_end - summary_start, "tokens": summary_tokens}
+            summary_input_tokens = metadata.get('token_usage', {}).get('prompt_tokens', 0)
+
+        summary_metrics = {"duration": summary_end - summary_start, "tokens": summary_tokens, "input_tokens": summary_input_tokens}
     else:
         print("Error generating summary: No response from LLM")
         summary_metrics = None
@@ -399,26 +441,29 @@ def main():
         seconds = int(elapsed_time % 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-    print(f"\nReading background and instructions: {format_time(reading_time_end - start_time)}")
-    
+
+    print(f"\nLoading story background and chapter summaries: {background_tokens} tokens (context_size={background_tokens})")
+
     total_gen_tokens = 0
     total_gen_duration = 0
-    
+
     for i, metrics in enumerate(chunk_metrics):
         duration = metrics["duration"]
-        tokens = metrics["tokens"]
-        total_gen_tokens += tokens
+        input_tokens = metrics["input_tokens"]
+        output_tokens = metrics["output_tokens"]
+        total_gen_tokens += output_tokens
         total_gen_duration += duration
-        tps = tokens / duration if duration > 0 else 0
-        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | {tokens} tokens ({tps:.2f} t/s)")
-    
+        tps = output_tokens / duration if duration > 0 else 0
+        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | in={input_tokens} out={output_tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
+
     if summary_metrics:
         duration = summary_metrics["duration"]
         tokens = summary_metrics["tokens"]
+        input_tokens = summary_metrics.get("input_tokens", 0)
         total_gen_tokens += tokens
         total_gen_duration += duration
         tps = tokens / duration if duration > 0 else 0
-        print(f"Summarizing story: {format_time(duration)} | {tokens} tokens ({tps:.2f} t/s)")
+        print(f"Summarizing story: {format_time(duration)} | in={input_tokens} out={tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
     
     if total_gen_duration > 0:
         avg_tps = total_gen_tokens / total_gen_duration
