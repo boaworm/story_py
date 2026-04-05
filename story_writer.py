@@ -105,29 +105,43 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.9,
-        help="LLM sampling temperature (default: 0.9).",
+        default=None,
+        help="LLM sampling temperature.",
     )
 
     parser.add_argument(
         "--top_p",
         type=float,
-        default=0.95,
-        help="LLM top-p nucleus sampling (default: 0.95).",
+        default=None,
+        help="LLM top-p nucleus sampling.",
     )
 
     parser.add_argument(
         "--frequency_penalty",
         type=float,
-        default=0.25,
-        help="Penalises repeated tokens (default: 0.25). Reduces repetitive phrasing.",
+        default=None,
+        help="Penalises repeated tokens.",
     )
 
     parser.add_argument(
         "--presence_penalty",
         type=float,
-        default=0.1,
-        help="Penalises repeated topics (default: 0.1). Keeps narrative from circling the same ideas.",
+        default=None,
+        help="Penalises repeated topics.",
+    )
+
+    parser.add_argument(
+        "--min_p",
+        type=float,
+        default=None,
+        help="Minimum probability threshold for tokens.",
+    )
+
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=None,
+        help="LLM top-k sampling.",
     )
 
     args = parser.parse_args()
@@ -143,17 +157,33 @@ def main():
     # LLM Setup
     # ==============================================================================
     stop_tokens = ["\u0001", "<|end_of_text|>", "<|eot_id|>"]
+
+    # Build kwargs only for parameters that were explicitly provided
+    llm_kwargs = {
+        "openai_api_base": args.api_url,
+        "openai_api_key": "lm-studio",
+        "model": "default",
+        "max_tokens": -1,
+    }
+    if args.temperature is not None:
+        llm_kwargs["temperature"] = args.temperature
+    if args.top_p is not None:
+        llm_kwargs["top_p"] = args.top_p
+    if args.frequency_penalty is not None:
+        llm_kwargs["frequency_penalty"] = args.frequency_penalty
+    if args.presence_penalty is not None:
+        llm_kwargs["presence_penalty"] = args.presence_penalty
+
+    extra_body = {}
+    if args.min_p is not None:
+        extra_body["min_p"] = args.min_p
+    if args.top_k is not None:
+        extra_body["top_k"] = args.top_k
+    if extra_body:
+        llm_kwargs["extra_body"] = extra_body
+
     try:
-        llm = ChatOpenAI(
-            openai_api_base=args.api_url,
-            openai_api_key="lm-studio",
-            model="default",
-            temperature=args.temperature,
-            top_p=args.top_p,
-            frequency_penalty=args.frequency_penalty,
-            presence_penalty=args.presence_penalty,
-            max_tokens=-1,
-        )
+        llm = ChatOpenAI(**llm_kwargs)
         print(f"Connected to LLM at {args.api_url}")
     except Exception as e:
         print(f"Failed to connect to the LLM service at {args.api_url}.")
@@ -319,6 +349,7 @@ def main():
         "Use simple language, short to medium sentences.\n"
         "Do not introduce new characters or events unless requested.\n"
         "Do not add titles or headers.\n"
+        "PRACTICE FRONTING: Begin 50% of your sentences with a prepositional phrase, an adverb, or a dependent clause. Instead of 'Henrik swings his mace,' write 'With a guttural roar, Henrik swings his mace.' Instead of 'He is not afraid,' write 'Deep in the thick of the melee, fear is the last thing on his mind.' NEVER start more than two sentences in a row with a Proper Noun or Pronoun.\n"
         "ONLY OUTPUT THE NEW CONTINUATION, directly related to key events below.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
         "END OF BACKGROUND\n\n"
