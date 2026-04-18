@@ -144,6 +144,13 @@ def main():
         help="LLM top-k sampling.",
     )
 
+    parser.add_argument(
+        "--repeat_penalty",
+        type=float,
+        default=None,
+        help="Multiplicative penalty for repeated tokens (llama.cpp style).",
+    )
+
     args = parser.parse_args()
 
     # Verify that the files exist
@@ -179,6 +186,8 @@ def main():
         extra_body["min_p"] = args.min_p
     if args.top_k is not None:
         extra_body["top_k"] = args.top_k
+    if args.repeat_penalty is not None:
+        extra_body["repeat_penalty"] = args.repeat_penalty
     if extra_body:
         llm_kwargs["extra_body"] = extra_body
 
@@ -347,6 +356,7 @@ def main():
         "DO NOT go beyond the last key event listed. End the story with the last key event.\n"
         "DO NOT create a conclusion or wrap up the story unless the key events indicate the story ends.\n"
         "Use simple language, short to medium sentences.\n"
+        "Expand on each event with sensory details, dialogue, and character thoughts.\n"
         "Do not introduce new characters or events unless requested.\n"
         "Do not add titles or headers.\n"
         "PRACTICE FRONTING: Begin 50% of your sentences with a prepositional phrase, an adverb, or a dependent clause. Instead of 'Henrik swings his mace,' write 'With a guttural roar, Henrik swings his mace.' Instead of 'He is not afraid,' write 'Deep in the thick of the melee, fear is the last thing on his mind.' NEVER start more than two sentences in a row with a Proper Noun or Pronoun.\n"
@@ -361,6 +371,19 @@ def main():
     chunk_prompt = PromptTemplate(
         input_variables=["previous_story", "key_events"],
         template=chunk_prompt_template
+    )
+
+    chunk_summary_prompt_template = (
+        "/no_think\n"
+        "Summarize the following story passage in 3-5 sentences.\n"
+        "Capture: what happened, where the characters are now, and the last moment so the story can continue smoothly.\n"
+        "Be concise and factual. No flowery language.\n"
+        "Output ONLY the summary.\n"
+        "\nPASSAGE:\n{chunk_text}\n\nBRIEF SUMMARY:"
+    )
+    chunk_summary_prompt = PromptTemplate(
+        input_variables=["chunk_text"],
+        template=chunk_summary_prompt_template
     )
 
     whole_new_chapter = ""
@@ -382,7 +405,6 @@ def main():
         try:
             new_story_section = llm.invoke(prompt)
             whole_new_chapter += new_story_section.content.strip() + "\n\n"
-            summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
         except Exception as e:
             print(f"Error generating chunk {idx+1}: {e}")
             break
@@ -401,10 +423,27 @@ def main():
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
 
+        # Summarise the chunk and use that as rolling context instead of full text
+        summary_tokens = 0
+        try:
+            chunk_summary_msg = llm.invoke(
+                chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())
+            )
+            chunk_summary_text = chunk_summary_msg.content.strip()
+            summary_plus_new_story += f"\n[Section summary]: {chunk_summary_text}"
+            if (meta := getattr(chunk_summary_msg, 'response_metadata', {})) and 'token_usage' in meta:
+                summary_tokens = meta['token_usage'].get('completion_tokens', 0)
+            else:
+                summary_tokens = count_tokens(chunk_summary_text)
+        except Exception as e:
+            print(f"Warning: chunk {idx+1} summary failed ({e}), falling back to full text.")
+            summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
+
         chunk_metrics.append({
             "duration": duration,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "summary_tokens": summary_tokens,
         })
 
     print(f"New chapter written to {new_chapter_file}")
@@ -484,8 +523,9 @@ def main():
         output_tokens = metrics["output_tokens"]
         total_gen_tokens += output_tokens
         total_gen_duration += duration
+        summary_tokens = metrics.get("summary_tokens", 0)
         tps = output_tokens / duration if duration > 0 else 0
-        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | in={input_tokens} out={output_tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
+        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | in={input_tokens} out={output_tokens} summary={summary_tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
 
     if summary_metrics:
         duration = summary_metrics["duration"]

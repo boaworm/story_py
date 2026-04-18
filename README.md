@@ -75,17 +75,37 @@ python story_writer.py --story story_background.txt --instructions instructions.
 
 ### Recommended Parameters
 
-**For gemma3-27b:**
+**For gemma3-27b at q8**
 ```bash
-python story_writer.py --story story_background.txt --instructions instructions.txt --key_event_chunk_size 4
+python story_writer.py \
+   --api_url http://localhost:1234 \
+   --story story_background.txt \
+   --instructions instructions.txt \
+   --key_event_chunk_size 4 \
+   --temperature 0.1 \
+   --top_k 100 \
+   --repeat_penalty 1.1
 ```
 
-**For qwen3.5 122b:**
+**For qwen3.5-122b at q5**
 ```bash
-python story_writer.py --api_url http://127.0.0.1:1234 --story story_background.txt --instructions instructions.txt --key_event_chunk_size 12
+python story_writer.py \
+   --api_url http://localhost:1234 \
+   --story story_background.txt \
+   --instructions instructions.txt \
+   --key_event_chunk_size 4 \
+   --temperature 1.20 \
+   --presence_penalty 0.3 \
+   --frequency_penalty 0.85 \
+   --top_p 0.9 \
+   --top_k 45 \
+   --min_p 0.09
 ```
 
-**Note:** For both models, write your story outline using 12 sentences. The `gemma3-27b` model produces less output per event, so it works best when processing events in chunks of 4. The `qwen3.5 122b` model generates more text, allowing you to ingest all 12 lines as a single chunk.
+**Notes:**
+- Write your story outline in multiples of `--key_event_chunk_size` (default 4) to avoid a lone event forming its own under-developed section.
+- `gemma3-27b` produces the best local results. `gemma4-31b` was tested but produces noticeably more compact, mechanical prose — avoid it for creative writing.
+- `qwen3.5-122b` at 122B produces output quality comparable to gemma3-27b, sometimes better, at the cost of requiring a remote/high-VRAM machine.
 
 ### CLI Arguments
 | Argument | Default | Description |
