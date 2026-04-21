@@ -474,17 +474,28 @@ def main():
 
     chapter_summary_prompt_template = (
         "/no_think\n"
-        "You are an expert at creating detailed factual summaries.\n"
-        "Summarize the events of the following new chapter.\n"
-        "Retain all factual details, names, locations, items, places visited, experiences gained and actions.\n"
-        "Remove flowery language, dialogue, and pacing.\n"
-        "Make it a dense factual record of what happened.\n"
-        "Output ONLY the summary. Do not include any introductory text or titles.\n"
+        "You are a game master writing a continuity record for future chapters.\n"
+        "Summarize the chapter below in 300-500 words. Hard limit: 500 words.\n"
+        "Write in plain, terse sentences. No dialogue. No descriptions. No emotions.\n"
+        "\n"
+        "YOU MUST CAPTURE every item from this list that occurred in the chapter:\n"
+        "- Items acquired or lost (weapons, treasure, equipment, consumables)\n"
+        "- Locations visited and their key features or dangers\n"
+        "- Named characters met, aided, or parted from\n"
+        "- Abilities, spells, or knowledge used or discovered\n"
+        "- Party condition at chapter end (injuries, remaining spells, resources)\n"
+        "- Unresolved threats or open story hooks\n"
+        "\n"
+        "OMIT entirely:\n"
+        "- Dialogue and speech\n"
+        "- Sensory descriptions and atmosphere\n"
+        "- Combat blow-by-blow narration\n"
+        "- Emotional reactions\n"
         "\n"
         "CHAPTER TEXT:\n"
         "{chapter_text}\n"
         "\n"
-        "DENSE FACTUAL SUMMARY:")
+        "CONTINUITY RECORD (300-500 words):")
 
     chapter_summary_prompt = PromptTemplate(
         input_variables=["chapter_text"],
@@ -497,11 +508,13 @@ def main():
     )):
         new_summary_text = new_summary_message.content.strip()
         word_count = len(whole_new_chapter.split())
+        summary_word_count = len(new_summary_text.split())
 
         with open(new_summary_file, "w", encoding="utf-8") as f:
             f.write(new_summary_text + "\n")
 
         print(f"\nChapter {next_chapter_num} consists of {word_count} words.")
+        print(f"Chapter {next_chapter_num} summary consists of {summary_word_count} words.")
         
         summary_end = time.time()
         
