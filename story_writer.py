@@ -17,7 +17,7 @@ MAX_KEY_EVENTS_PER_CHUNK = 5
 def count_tokens(text: str) -> int:
     """
     Estimates the number of tokens in a string based on a word count.
-    
+
     This is an approximation, as actual tokenization can vary between models.
     A common rule of thumb is that one word is roughly equal to one token.
     """
@@ -151,6 +151,13 @@ def main():
         help="Multiplicative penalty for repeated tokens (llama.cpp style).",
     )
 
+    parser.add_argument(
+        "--min_tokens",
+        type=int,
+        default=None,
+        help="Minimum tokens to generate per chunk before the model is allowed to stop.",
+    )
+
     args = parser.parse_args()
 
     # Verify that the files exist
@@ -188,6 +195,8 @@ def main():
         extra_body["top_k"] = args.top_k
     if args.repeat_penalty is not None:
         extra_body["repeat_penalty"] = args.repeat_penalty
+    if args.min_tokens is not None:
+        extra_body["min_tokens"] = args.min_tokens
     if extra_body:
         llm_kwargs["extra_body"] = extra_body
 
@@ -357,9 +366,10 @@ def main():
         "DO NOT create a conclusion or wrap up the story unless the key events indicate the story ends.\n"
         "Use simple language, short to medium sentences.\n"
         "Expand on each event with sensory details, dialogue, and character thoughts.\n"
-        "Write at least 300 words per key event before moving to the next.\n"
+        "Write at least 200 words per key event before moving to the next.\n"
         "Do not introduce new characters or events unless requested.\n"
-        "Do not add titles or headers. Do not include the key event text in your output.\n"
+        "Do not add titles, headers, or numbered sections. Output pure flowing prose only.\n"
+        "NEVER reproduce or paraphrase any key event text as a header, label, or sentence opener.\n"
         "PRACTICE FRONTING: Begin 50% of your sentences with a prepositional phrase, an adverb, or a dependent clause. Instead of 'Henrik swings his mace,' write 'With a guttural roar, Henrik swings his mace.' Instead of 'He is not afraid,' write 'Deep in the thick of the melee, fear is the last thing on his mind.' NEVER start more than two sentences in a row with a Proper Noun or Pronoun.\n"
         "ONLY OUTPUT THE NEW CONTINUATION, directly related to key events below.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
@@ -376,11 +386,11 @@ def main():
 
     chunk_summary_prompt_template = (
         "/no_think\n"
-        "Summarize the following story passage in 3-5 sentences.\n"
-        "Capture: what happened, where the characters are now, and the last moment so the story can continue smoothly.\n"
-        "Be concise and factual. No flowery language.\n"
-        "Output ONLY the summary.\n"
-        "\nPASSAGE:\n{chunk_text}\n\nBRIEF SUMMARY:"
+        "Compact and summarize this story passage into ~400 words MAX.\n"
+        "Write in tight, tense prose. NO dialogue. NO emotions. NO descriptions.\n"
+        "Just factual events: what happened, where they are, when, their condition, and the last moment.\n"
+        "Output ONLY the summary paragraph, no lists or introductions.\n"
+        "\nPASSAGE:\n{chunk_text}\n\nSUMMARY:"
     )
     chunk_summary_prompt = PromptTemplate(
         input_variables=["chunk_text"],
@@ -431,7 +441,7 @@ def main():
                 chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())
             )
             chunk_summary_text = chunk_summary_msg.content.strip()
-            summary_plus_new_story += f"\n[Section summary]: {chunk_summary_text}"
+            summary_plus_new_story += f"\n{chunk_summary_text}"
             if (meta := getattr(chunk_summary_msg, 'response_metadata', {})) and 'token_usage' in meta:
                 summary_tokens = meta['token_usage'].get('completion_tokens', 0)
             else:
@@ -486,9 +496,12 @@ def main():
         chapter_summary_prompt.format(chapter_text=whole_new_chapter)
     )):
         new_summary_text = new_summary_message.content.strip()
-        
+        word_count = len(whole_new_chapter.split())
+
         with open(new_summary_file, "w", encoding="utf-8") as f:
             f.write(new_summary_text + "\n")
+
+        print(f"\nChapter {next_chapter_num} consists of {word_count} words.")
         
         summary_end = time.time()
         
@@ -511,7 +524,6 @@ def main():
         minutes = int((elapsed_time % 3600) // 60)
         seconds = int(elapsed_time % 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
 
     print(f"\nLoading story background and chapter summaries: {background_tokens} tokens (context_size={background_tokens})")
 
