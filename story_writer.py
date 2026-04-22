@@ -474,28 +474,30 @@ def main():
 
     chapter_summary_prompt_template = (
         "/no_think\n"
-        "You are a game master writing a continuity record for future chapters.\n"
-        "Summarize the chapter below in 300-500 words. Hard limit: 500 words.\n"
+        "You are a game master writing a continuity record so future chapters stay coherent.\n"
+        "Summarize the chapter below in 200-400 words. Hard limit: 400 words.\n"
         "Write in plain, terse sentences. No dialogue. No descriptions. No emotions.\n"
         "\n"
-        "YOU MUST CAPTURE every item from this list that occurred in the chapter:\n"
+        "INCLUDE ONLY facts with lasting consequences — facts a future writer must know to avoid contradictions:\n"
         "- Items acquired or lost (weapons, treasure, equipment, consumables)\n"
-        "- Locations visited and their key features or dangers\n"
+        "- Locations visited, with any features that affect future events\n"
         "- Named characters met, aided, or parted from\n"
-        "- Abilities, spells, or knowledge used or discovered\n"
-        "- Party condition at chapter end (injuries, remaining spells, resources)\n"
+        "- New abilities, spells, or knowledge the party now possesses\n"
+        "- Party condition at chapter end (injuries, exhausted spells/resources)\n"
         "- Unresolved threats or open story hooks\n"
         "\n"
-        "OMIT entirely:\n"
+        "OMIT anything that has no lasting effect on future chapters:\n"
+        "- Routine actions (checking equipment, packing, eating, testing weapons)\n"
+        "- Combat blow-by-blow narration\n"
         "- Dialogue and speech\n"
         "- Sensory descriptions and atmosphere\n"
-        "- Combat blow-by-blow narration\n"
         "- Emotional reactions\n"
+        "- Any action whose omission would not cause a future contradiction\n"
         "\n"
         "CHAPTER TEXT:\n"
         "{chapter_text}\n"
         "\n"
-        "CONTINUITY RECORD (300-500 words):")
+        "CONTINUITY RECORD (200-400 words):")
 
     chapter_summary_prompt = PromptTemplate(
         input_variables=["chapter_text"],
