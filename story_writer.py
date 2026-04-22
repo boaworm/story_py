@@ -436,14 +436,19 @@ def main():
 
         # Summarise the chunk and use that as rolling context instead of full text
         summary_tokens = 0
+        summary_input_tokens = 0
+        summary_duration = 0
         try:
+            summary_start_time = time.time()
             chunk_summary_msg = llm.invoke(
                 chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())
             )
+            summary_duration = time.time() - summary_start_time
             chunk_summary_text = chunk_summary_msg.content.strip()
             summary_plus_new_story += f"\n{chunk_summary_text}"
             if (meta := getattr(chunk_summary_msg, 'response_metadata', {})) and 'token_usage' in meta:
                 summary_tokens = meta['token_usage'].get('completion_tokens', 0)
+                summary_input_tokens = meta['token_usage'].get('prompt_tokens', 0)
             else:
                 summary_tokens = count_tokens(chunk_summary_text)
         except Exception as e:
@@ -452,9 +457,11 @@ def main():
 
         chunk_metrics.append({
             "duration": duration,
+            "summary_duration": summary_duration,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "summary_tokens": summary_tokens,
+            "summary_input_tokens": summary_input_tokens,
         })
 
     print(f"New chapter written to {new_chapter_file}")
@@ -542,31 +549,38 @@ def main():
 
     print(f"\nLoading story background and chapter summaries: {background_tokens} tokens (context_size={background_tokens})")
 
-    total_gen_tokens = 0
+    total_pp_tokens = 0
+    total_tg_tokens = 0
     total_gen_duration = 0
 
     for i, metrics in enumerate(chunk_metrics):
         duration = metrics["duration"]
+        summary_duration = metrics.get("summary_duration", 0)
         input_tokens = metrics["input_tokens"]
         output_tokens = metrics["output_tokens"]
-        total_gen_tokens += output_tokens
-        total_gen_duration += duration
         summary_tokens = metrics.get("summary_tokens", 0)
+        summary_input_tokens = metrics.get("summary_input_tokens", 0)
+        total_pp_tokens += input_tokens + summary_input_tokens
+        total_tg_tokens += output_tokens + summary_tokens
+        total_gen_duration += duration + summary_duration
         tps = output_tokens / duration if duration > 0 else 0
-        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | in={input_tokens} out={output_tokens} summary={summary_tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
+        sum_tps = summary_tokens / summary_duration if summary_duration > 0 else 0
+        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | pp={input_tokens} tg={output_tokens} tokens ({tps:.2f} t/s)")
+        print(f"  Rolling summary {i+1}: {format_time(summary_duration)} | pp={summary_input_tokens} tg={summary_tokens} tokens ({sum_tps:.2f} t/s)")
 
     if summary_metrics:
         duration = summary_metrics["duration"]
         tokens = summary_metrics["tokens"]
         input_tokens = summary_metrics.get("input_tokens", 0)
-        total_gen_tokens += tokens
+        total_pp_tokens += input_tokens
+        total_tg_tokens += tokens
         total_gen_duration += duration
         tps = tokens / duration if duration > 0 else 0
-        print(f"Summarizing story: {format_time(duration)} | in={input_tokens} out={tokens} tokens ({tps:.2f} t/s) (context_size={input_tokens})")
-    
+        print(f"Summarizing story: {format_time(duration)} | pp={input_tokens} tg={tokens} tokens ({tps:.2f} t/s)")
+
     if total_gen_duration > 0:
-        avg_tps = total_gen_tokens / total_gen_duration
-        print(f"\nGeneration Summary:\n  Model used:    {actual_model_name}\n  Total tokens:  {total_gen_tokens}\n  Total time:    {format_time(total_gen_duration)}\n  Avg performance: {avg_tps:.2f} t/s")
+        avg_tps = total_tg_tokens / total_gen_duration
+        print(f"\nGeneration Summary:\n  Model used:    {actual_model_name}\n  PP tokens:     {total_pp_tokens}\n  TG tokens:     {total_tg_tokens}\n  Total time:    {format_time(total_gen_duration)}\n  Avg TG perf:   {avg_tps:.2f} t/s")
 
     print(f"\nTotal execution time: {format_time(end_time - start_time)}")
 
