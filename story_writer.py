@@ -71,14 +71,14 @@ def main():
     parser.add_argument(
         "--story",
         type=str,
-        required=True,
-        help="Path to the static lore/background text file.",
+        default="story_background.txt",
+        help="Path to the static lore/background text file (default: story_background.txt).",
     )
     parser.add_argument(
         "--instructions",
         type=str,
-        required=True,
-        help="Path to the file containing instructions for the final output.",
+        default=None,
+        help="Path to the file containing instructions. Defaults to chapterN_instructions.txt when --regenerate is used.",
     )
     
     parser.add_argument(
@@ -100,6 +100,13 @@ def main():
         type=int,
         default=None,
         help="Specify a chapter number to rebuild using previous summaries.",
+    )
+
+    parser.add_argument(
+        "--regenerate",
+        type=int,
+        default=None,
+        help="Regenerate a specific chapter, discarding its story and summary before rewriting.",
     )
 
     parser.add_argument(
@@ -159,6 +166,14 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Resolve instructions file
+    if args.instructions is None:
+        if args.regenerate is not None:
+            args.instructions = f"chapter{args.regenerate}_instructions.txt"
+        else:
+            print("Error: --instructions is required unless --regenerate is used.")
+            return
 
     # Verify that the files exist
     if not (story_path := Path(args.story)).is_file():
@@ -242,6 +257,22 @@ def main():
         # Delete existing story and summary files
         story_file = Path(f"chapter{regenerate_chapter_num}_story.txt")
         summary_file = Path(f"chapter{regenerate_chapter_num}_summary.txt")
+
+        if story_file.exists():
+            story_file.unlink()
+            print(f"Deleted existing {story_file.name}")
+
+        if summary_file.exists():
+            summary_file.unlink()
+            print(f"Deleted existing {summary_file.name}")
+    elif args.regenerate is not None:
+        # --regenerate N: discard existing story and summary, then rewrite
+        next_chapter_num = args.regenerate
+        regenerating_chapter = True
+        print(f"\nRegenerating chapter {next_chapter_num}...")
+
+        story_file = Path(f"chapter{next_chapter_num}_story.txt")
+        summary_file = Path(f"chapter{next_chapter_num}_summary.txt")
 
         if story_file.exists():
             story_file.unlink()
@@ -362,8 +393,8 @@ def main():
         "Each numbered event is mandatory. Do not skip, merge, or omit any event.\n"
         "Each event MUST happen sequentially in the order listed. Do not reorder.\n"
         "DO NOT repeat or rewrite any part of the previous story.\n"
-        "DO NOT go beyond the last key event listed. End the story with the last key event.\n"
-        "DO NOT create a conclusion or wrap up the story unless the key events indicate the story ends.\n"
+        "STOP writing the moment you have covered the last numbered key event. Do NOT write anything after it.\n"
+        "Do NOT wrap up, conclude, or add any content beyond the last numbered event.\n"
         "Use simple language, short to medium sentences.\n"
         "Expand on each event with sensory details, dialogue, and character thoughts.\n"
         "Write at least 200 words per key event before moving to the next.\n"
@@ -376,7 +407,8 @@ def main():
         "END OF BACKGROUND\n\n"
         "BEGINNING OF KEY EVENTS (MUST ALL BE COVERED, IN ORDER, NONE SKIPPED)\n{key_events}\n"
         "END OF KEY EVENTS\n\n"
-        "Write the continuation now, covering every single numbered event above, starting immediately after where the previous text ended:\n"
+        "*** HARD STOP: As soon as the last numbered event above is written, stop immediately. Write nothing after it. ***\n\n"
+        "Write the continuation now, covering every single numbered event above, starting immediately after where the previous text ended. Stop the moment the last event is done:\n"
     )
 
     chunk_prompt = PromptTemplate(
