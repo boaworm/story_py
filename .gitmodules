@@ -1,0 +1,3 @@
+[submodule "story_py_private"]
+	path = story_py_private
+	url = git@github.com:boaworm/story_py_private.git
