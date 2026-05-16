@@ -24,6 +24,13 @@ def count_tokens(text: str) -> int:
     return len(text.split())
 
 
+def context_bar(used, total, width=30):
+    pct = used / total
+    filled = int(pct * width)
+    bar = "█" * filled + "░" * (width - filled)
+    return f"{used:,} / {total:,} [{bar}] {pct*100:.1f}%"
+
+
 def get_incremented_filename(filename):
     path = Path(filename)
     stem = path.stem
@@ -166,6 +173,14 @@ def main():
     )
 
     parser.add_argument(
+        "--context-size",
+        type=int,
+        default=131072,
+        dest="context_size",
+        help="Model context window size in tokens (default: 131072 = 128k).",
+    )
+
+    parser.add_argument(
         "--min_tokens",
         type=int,
         default=None,
@@ -174,13 +189,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve explicit paths to absolute before any chdir, so they always win.
-    if args.story is not None:
-        args.story = str(Path(args.story).resolve())
-    if args.instructions is not None:
-        args.instructions = str(Path(args.instructions).resolve())
-
     # Switch working directory if requested.
+    # Do this before resolving any file defaults so all relative paths land here.
     if args.working_dir is not None:
         working_dir = Path(args.working_dir).resolve()
         if not working_dir.is_dir():
@@ -491,6 +501,8 @@ def main():
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
 
+        print(f"  Chunk {idx+1}/{len(event_chunks)} context: {context_bar(input_tokens, args.context_size)}")
+
         # Summarise the chunk and use that as rolling context instead of full text
         summary_tokens = 0
         summary_input_tokens = 0
@@ -508,6 +520,7 @@ def main():
                 summary_input_tokens = meta['token_usage'].get('prompt_tokens', 0)
             else:
                 summary_tokens = count_tokens(chunk_summary_text)
+            print(f"  Chunk {idx+1}/{len(event_chunks)} summary context: {context_bar(summary_input_tokens, args.context_size)}")
         except Exception as e:
             print(f"Warning: chunk {idx+1} summary failed ({e}), falling back to full text.")
             summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
@@ -568,10 +581,20 @@ def main():
         template=chapter_summary_prompt_template
     )
 
+    if not whole_new_chapter.strip():
+        print("Error: no chapter content was generated — skipping summary.")
+        return
+
     summary_start = time.time()
-    if (new_summary_message := llm.invoke(
-        chapter_summary_prompt.format(chapter_text=whole_new_chapter)
-    )):
+    try:
+        new_summary_message = llm.invoke(
+            chapter_summary_prompt.format(chapter_text=whole_new_chapter)
+        )
+    except Exception as e:
+        print(f"Error generating chapter summary: {e}")
+        return
+
+    if new_summary_message:
         new_summary_text = new_summary_message.content.strip()
         word_count = len(whole_new_chapter.split())
         summary_word_count = len(new_summary_text.split())
@@ -581,7 +604,7 @@ def main():
 
         print(f"\nChapter {next_chapter_num} consists of {word_count} words.")
         print(f"Chapter {next_chapter_num} summary consists of {summary_word_count} words.")
-        
+
         summary_end = time.time()
         
         summary_tokens = 0
