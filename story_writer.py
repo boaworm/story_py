@@ -71,14 +71,21 @@ def main():
     parser.add_argument(
         "--story",
         type=str,
-        default="story_background.txt",
-        help="Path to the static lore/background text file (default: story_background.txt).",
+        default=None,
+        help="Path to the static lore/background text file (default: story_background.txt in working dir).",
     )
     parser.add_argument(
         "--instructions",
         type=str,
         default=None,
-        help="Path to the file containing instructions. Defaults to chapterN_instructions.txt when --regenerate is used.",
+        help="Path to the instructions file (default: instructions.txt in working dir).",
+    )
+    parser.add_argument(
+        "--working-dir",
+        type=str,
+        default=None,
+        dest="working_dir",
+        help="Working directory containing story files (default: current directory).",
     )
     
     parser.add_argument(
@@ -167,20 +174,36 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve instructions file
+    # Resolve explicit paths to absolute before any chdir, so they always win.
+    if args.story is not None:
+        args.story = str(Path(args.story).resolve())
+    if args.instructions is not None:
+        args.instructions = str(Path(args.instructions).resolve())
+
+    # Switch working directory if requested.
+    if args.working_dir is not None:
+        working_dir = Path(args.working_dir).resolve()
+        if not working_dir.is_dir():
+            print(f"Error: Working directory '{working_dir}' does not exist.")
+            return
+        os.chdir(working_dir)
+        print(f"Working directory: {working_dir}")
+
+    # Fill in defaults relative to (possibly changed) CWD.
+    if args.story is None:
+        args.story = "story_background.txt"
     if args.instructions is None:
         if args.regenerate is not None:
             args.instructions = f"chapter{args.regenerate}_instructions.txt"
         else:
-            print("Error: --instructions is required unless --regenerate is used.")
-            return
+            args.instructions = "instructions.txt"
 
     # Verify that the files exist
     if not (story_path := Path(args.story)).is_file():
-        print(f"Error: The static lore file '{{story_path}}' was not found.")
+        print(f"Error: The static lore file '{story_path}' was not found.")
         return
     if not (instructions_path := Path(args.instructions)).is_file():
-        print(f"Error: The instructions file '{{instructions_path}}' was not found.")
+        print(f"Error: The instructions file '{instructions_path}' was not found.")
         return
 
     # LLM Setup
