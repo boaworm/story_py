@@ -33,6 +33,15 @@ def context_bar(used, total, width=30):
     return f"{used:,} / {total:,} [{bar}] {pct*100:.1f}%"
 
 
+def llm_invoke(llm, prompt, label, context_size):
+    response = llm.invoke(prompt)
+    input_tokens = 0
+    if meta := getattr(response, 'response_metadata', {}):
+        input_tokens = meta.get('token_usage', {}).get('prompt_tokens', 0)
+    print(f"  {label}: {context_bar(input_tokens, context_size)}")
+    return response
+
+
 def get_incremented_filename(filename):
     path = Path(filename)
     stem = path.stem
@@ -88,9 +97,9 @@ _ORDER_CHECK_PROMPT = (
 )
 
 
-def _extract_known_names(summary_context, llm):
+def _extract_known_names(summary_context, llm, context_size):
     try:
-        response = llm.invoke(_EXTRACT_NAMES_PROMPT.format(text=summary_context))
+        response = llm_invoke(llm, _EXTRACT_NAMES_PROMPT.format(text=summary_context), "Name extraction", context_size)
         names = []
         for line in response.content.strip().splitlines():
             name = line.strip().lstrip("-•*0123456789. ").strip()
@@ -121,10 +130,10 @@ def _find_name_typos(key_events, known_names):
     return corrected, issues
 
 
-def _check_event_order(key_events, llm):
+def _check_event_order(key_events, llm, context_size):
     key_events_str = "\n".join(f"{i+1}. {e}" for i, e in enumerate(key_events))
     try:
-        response = llm.invoke(_ORDER_CHECK_PROMPT.format(key_events=key_events_str))
+        response = llm_invoke(llm, _ORDER_CHECK_PROMPT.format(key_events=key_events_str), "Order check", context_size)
         text = response.content.strip()
         issues = []
         corrected_order = list(key_events)
@@ -139,13 +148,20 @@ def _check_event_order(key_events, llm):
                 if line and line.lower() != "none":
                     issues.append(line)
 
+            key_event_set = set(key_events)
+            seen = set()
             corrected_lines = []
             for line in order_block.splitlines():
                 m = re.match(r"^\d+\.\s+(.+)$", line.strip())
                 if m:
-                    corrected_lines.append(m.group(1).strip())
+                    candidate = m.group(1).strip()
+                    if candidate in key_event_set and candidate not in seen:
+                        corrected_lines.append(candidate)
+                        seen.add(candidate)
             if len(corrected_lines) == len(key_events):
                 corrected_order = corrected_lines
+            else:
+                print(f"  (Warning: could not parse corrected order — matched {len(corrected_lines)}/{len(key_events)} events)")
 
         return issues, corrected_order
     except Exception:
@@ -269,19 +285,17 @@ def _render_with_changes(instructions_text, key_events, name_corrected, final_co
     return "\n".join(result)
 
 
-def run_preprocess(key_events, instructions_text, static_lore, summary_context, llm, instructions_path):
+def run_preprocess(key_events, instructions_text, static_lore, summary_context, llm, instructions_path, context_size):
     print("\n" + "=" * 50)
     print("Pre-processor: continuity check...")
     print("=" * 50)
 
-    print("  Extracting known names from story background...")
-    known_names = _extract_known_names(static_lore, llm)
+    known_names = _extract_known_names(static_lore, llm, context_size)
 
     print("  Checking for name misspellings...")
     name_corrected, name_issues = _find_name_typos(key_events, known_names)
 
-    print("  Checking event order...")
-    order_issues, order_corrected = _check_event_order(key_events, llm)
+    order_issues, order_corrected = _check_event_order(key_events, llm, context_size)
 
     all_issues = name_issues + order_issues
 
@@ -671,7 +685,7 @@ def main():
     # Pre-processor: continuity check
     if not args.no_preprocess:
         key_events, instructions_text = run_preprocess(
-            key_events, instructions_text, static_lore, full_summary_text, llm, args.instructions
+            key_events, instructions_text, static_lore, full_summary_text, llm, args.instructions, args.context_size
         )
 
     # Generate the new story chapter
@@ -751,7 +765,7 @@ def main():
             key_events=key_events_str
         )
         try:
-            new_story_section = llm.invoke(prompt)
+            new_story_section = llm_invoke(llm, prompt, f"Chunk {idx+1}/{len(event_chunks)}", args.context_size)
             whole_new_chapter += new_story_section.content.strip() + "\n\n"
         except Exception as e:
             print(f"Error generating chunk {idx+1}: {e}")
@@ -771,16 +785,17 @@ def main():
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
 
-        print(f"  Chunk {idx+1}/{len(event_chunks)} context: {context_bar(input_tokens, args.context_size)}")
-
         # Summarise the chunk and use that as rolling context instead of full text
         summary_tokens = 0
         summary_input_tokens = 0
         summary_duration = 0
         try:
             summary_start_time = time.time()
-            chunk_summary_msg = llm.invoke(
-                chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())
+            chunk_summary_msg = llm_invoke(
+                llm,
+                chunk_summary_prompt.format(chunk_text=new_story_section.content.strip()),
+                f"Chunk {idx+1}/{len(event_chunks)} summary",
+                args.context_size,
             )
             summary_duration = time.time() - summary_start_time
             chunk_summary_text = chunk_summary_msg.content.strip()
@@ -790,7 +805,6 @@ def main():
                 summary_input_tokens = meta['token_usage'].get('prompt_tokens', 0)
             else:
                 summary_tokens = count_tokens(chunk_summary_text)
-            print(f"  Chunk {idx+1}/{len(event_chunks)} summary context: {context_bar(summary_input_tokens, args.context_size)}")
         except Exception as e:
             print(f"Warning: chunk {idx+1} summary failed ({e}), falling back to full text.")
             summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
@@ -857,8 +871,11 @@ def main():
 
     summary_start = time.time()
     try:
-        new_summary_message = llm.invoke(
-            chapter_summary_prompt.format(chapter_text=whole_new_chapter)
+        new_summary_message = llm_invoke(
+            llm,
+            chapter_summary_prompt.format(chapter_text=whole_new_chapter),
+            "Chapter summary",
+            args.context_size,
         )
     except Exception as e:
         print(f"Error generating chapter summary: {e}")
@@ -876,13 +893,12 @@ def main():
         print(f"Chapter {next_chapter_num} summary consists of {summary_word_count} words.")
 
         summary_end = time.time()
-        
+
         summary_tokens = 0
         summary_input_tokens = 0
         if metadata := getattr(new_summary_message, 'response_metadata', {}):
             summary_tokens = metadata.get('token_usage', {}).get('completion_tokens', 0)
             summary_input_tokens = metadata.get('token_usage', {}).get('prompt_tokens', 0)
-
         summary_metrics = {"duration": summary_end - summary_start, "tokens": summary_tokens, "input_tokens": summary_input_tokens}
     else:
         print("Error generating summary: No response from LLM")
