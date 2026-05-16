@@ -2,7 +2,9 @@
 
 # Import necessary libraries
 import argparse
+import difflib
 import os
+import sys
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -60,6 +62,260 @@ def get_incremented_filename(filename):
             new_stem = f"{Path(candidate).stem}1"
         candidate = str(Path(candidate).with_name(new_stem + suffix))
     return candidate
+
+
+_EXTRACT_NAMES_PROMPT = (
+    "/no_think\n"
+    "List every character name and place name that appears in the text below.\n"
+    "Output one name per line, nothing else. No explanations, no numbers, no bullet points.\n\n"
+    "TEXT:\n{text}\n\n"
+    "NAMES:"
+)
+
+_ORDER_CHECK_PROMPT = (
+    "/no_think\n"
+    "Check whether these story events are listed in a logical order.\n"
+    "Identify any event stated before something it logically depends on "
+    "(e.g. a battle outcome listed before the battle starts).\n\n"
+    "KEY EVENTS:\n{key_events}\n\n"
+    "Respond in EXACTLY this format:\n"
+    "ISSUES:\n"
+    "- <one issue per line, or 'None' if the order is fine>\n\n"
+    "CORRECTED ORDER:\n"
+    "1. <event text copied verbatim>\n"
+    "2. <event text copied verbatim>\n"
+    "(List ALL events in the correct logical order. Copy each line verbatim. Only reorder, do not change any wording.)\n"
+)
+
+
+def _extract_known_names(summary_context, llm):
+    try:
+        response = llm.invoke(_EXTRACT_NAMES_PROMPT.format(text=summary_context))
+        names = []
+        for line in response.content.strip().splitlines():
+            name = line.strip().lstrip("-•*0123456789. ").strip()
+            if len(name) > 1:
+                names.append(name)
+        return names
+    except Exception:
+        return []
+
+
+def _find_name_typos(key_events, known_names):
+    if not known_names:
+        return list(key_events), []
+    corrected = []
+    issues = []
+    for event in key_events:
+        words = re.findall(r'\b[A-Z][a-zA-Z]+\b', event)
+        corrected_event = event
+        for word in dict.fromkeys(words):  # preserve order, deduplicate
+            if word in known_names:
+                continue
+            matches = difflib.get_close_matches(word, known_names, n=1, cutoff=0.8)
+            if matches:
+                correct = matches[0]
+                corrected_event = re.sub(r'\b' + re.escape(word) + r'\b', correct, corrected_event)
+                issues.append(f"'{word}' looks like a misspelling of '{correct}'")
+        corrected.append(corrected_event)
+    return corrected, issues
+
+
+def _check_event_order(key_events, llm):
+    key_events_str = "\n".join(f"{i+1}. {e}" for i, e in enumerate(key_events))
+    try:
+        response = llm.invoke(_ORDER_CHECK_PROMPT.format(key_events=key_events_str))
+        text = response.content.strip()
+        issues = []
+        corrected_order = list(key_events)
+
+        if "ISSUES:" in text and "CORRECTED ORDER:" in text:
+            parts = text.split("CORRECTED ORDER:", 1)
+            issues_block = parts[0].replace("ISSUES:", "").strip()
+            order_block = parts[1].strip()
+
+            for line in issues_block.splitlines():
+                line = line.strip().lstrip("-").strip()
+                if line and line.lower() != "none":
+                    issues.append(line)
+
+            corrected_lines = []
+            for line in order_block.splitlines():
+                m = re.match(r"^\d+\.\s+(.+)$", line.strip())
+                if m:
+                    corrected_lines.append(m.group(1).strip())
+            if len(corrected_lines) == len(key_events):
+                corrected_order = corrected_lines
+
+        return issues, corrected_order
+    except Exception:
+        return [], list(key_events)
+
+
+def _apply_corrections_to_text(instructions_text, original_events, corrected_events):
+    """Write corrected events back into the instructions file.
+    If only text changed (no reorder), replace lines in-place to preserve blank-line grouping.
+    If order changed, dump the events flat between the markers."""
+    order_changed = [o for o in corrected_events] != [o for o in original_events if o in corrected_events and corrected_events.index(o) == original_events.index(o)]
+    # Simpler check: same events in same sequence?
+    order_changed = corrected_events != original_events and sorted(corrected_events) == sorted(original_events)
+
+    lines = instructions_text.splitlines(keepends=True)
+    result = []
+    in_events = False
+    event_idx = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "START OF KEY EVENTS:":
+            in_events = True
+            result.append(line)
+            if order_changed:
+                result.append("\n")
+                for event in corrected_events:
+                    result.append(event + "\n")
+                result.append("\n")
+        elif stripped == "END OF KEY EVENTS:":
+            in_events = False
+            result.append(line)
+        elif in_events:
+            if order_changed:
+                pass  # already written above
+            elif stripped:
+                if event_idx < len(corrected_events):
+                    ending = "\n" if line.endswith("\n") else ""
+                    result.append(corrected_events[event_idx] + ending)
+                    event_idx += 1
+                else:
+                    result.append(line)
+            else:
+                result.append(line)  # preserve blank lines
+        else:
+            result.append(line)
+
+    return "".join(result)
+
+
+_DEL   = "\033[41;97m"   # red background, bright white text  — removed chars
+_ADD   = "\033[42;97m"   # green background, bright white text — added chars
+_RESET = "\033[0m"
+
+
+def _track_changes(old_text, new_text):
+    """Return a single line showing old and new text inline, track-changes style."""
+    old_tokens = re.findall(r"\S+|\s+", old_text)
+    new_tokens = re.findall(r"\S+|\s+", new_text)
+    matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens, autojunk=False)
+    out = ""
+    for op, a0, a1, b0, b1 in matcher.get_opcodes():
+        if op == "equal":
+            out += "".join(old_tokens[a0:a1])
+        elif op == "replace":
+            out += _DEL + "".join(old_tokens[a0:a1]) + _RESET
+            out += _ADD + "".join(new_tokens[b0:b1]) + _RESET
+        elif op == "delete":
+            out += _DEL + "".join(old_tokens[a0:a1]) + _RESET
+        elif op == "insert":
+            out += _ADD + "".join(new_tokens[b0:b1]) + _RESET
+    return out
+
+
+def _render_with_changes(instructions_text, key_events, name_corrected, final_corrected):
+    """Render full instructions as one block with track-changes highlighting.
+    Diffs name_corrected vs final_corrected so only order changes produce red/green lines.
+    Equal entries are rendered with _track_changes(original, name_corrected) to show name fixes inline."""
+    # Map name_corrected text → original text for looking up originals in the diff
+    original_map = {nc: orig for orig, nc in zip(key_events, name_corrected)}
+
+    diff = list(difflib.ndiff(name_corrected, final_corrected))
+    rendered_events = []
+    for entry in diff:
+        tag = entry[:2]
+        content = entry[2:]
+        if tag == "? ":
+            continue
+        elif tag == "  ":
+            # Unchanged position: show with inline name correction if any
+            orig = original_map.get(content, content)
+            rendered_events.append(_track_changes(orig, content) if orig != content else content)
+        elif tag == "- ":
+            # Line moved away from here: show original text on red background
+            orig = original_map.get(content, content)
+            rendered_events.append(_DEL + orig + _RESET)
+        elif tag == "+ ":
+            # Line moved to here: show corrected text on green background
+            rendered_events.append(_ADD + content + _RESET)
+
+    # Embed rendered events inside the instructions file structure
+    lines = instructions_text.splitlines()
+    result = []
+    in_events = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "START OF KEY EVENTS:":
+            in_events = True
+            result.append(line)
+            result.append("")
+            for ev in rendered_events:
+                result.append(ev)
+            result.append("")
+        elif stripped == "END OF KEY EVENTS:":
+            in_events = False
+            result.append(line)
+        elif in_events:
+            pass  # replaced by rendered_events above
+        else:
+            result.append(line)
+    return "\n".join(result)
+
+
+def run_preprocess(key_events, instructions_text, static_lore, summary_context, llm, instructions_path):
+    print("\n" + "=" * 50)
+    print("Pre-processor: continuity check...")
+    print("=" * 50)
+
+    print("  Extracting known names from story background...")
+    known_names = _extract_known_names(static_lore, llm)
+
+    print("  Checking for name misspellings...")
+    name_corrected, name_issues = _find_name_typos(key_events, known_names)
+
+    print("  Checking event order...")
+    order_issues, order_corrected = _check_event_order(key_events, llm)
+
+    all_issues = name_issues + order_issues
+
+    if not all_issues:
+        print("No issues found.")
+        return key_events, instructions_text
+
+    print(f"\nIssues found ({len(all_issues)}):")
+    for issue in all_issues:
+        print(f"  - {issue}")
+
+    # Combine: apply name corrections on top of the order-corrected list
+    name_map = {orig: corr for orig, corr in zip(key_events, name_corrected)}
+    final_corrected = [name_map.get(e, e) for e in order_corrected]
+
+    print()
+    print(_render_with_changes(instructions_text, key_events, name_corrected, final_corrected))
+    print()
+
+    if final_corrected != key_events:
+        answer = input(f"Apply corrections to {instructions_path}? [y/N]: ").strip().lower()
+        if answer == "y":
+            new_text = _apply_corrections_to_text(instructions_text, key_events, final_corrected)
+            with open(instructions_path, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            print(f"Corrections applied and saved to {instructions_path}.")
+            return final_corrected, new_text
+    else:
+        answer = input("Proceed with generation anyway? [y/N]: ").strip().lower()
+        if answer != "y":
+            print("Aborting.")
+            sys.exit(0)
+
+    return key_events, instructions_text
 
 
 def main():
@@ -185,6 +441,14 @@ def main():
         type=int,
         default=None,
         help="Minimum tokens to generate per chunk before the model is allowed to stop.",
+    )
+
+    parser.add_argument(
+        "--no-preprocess",
+        action="store_true",
+        default=False,
+        dest="no_preprocess",
+        help="Skip the instructions pre-processor continuity check.",
     )
 
     args = parser.parse_args()
@@ -399,10 +663,16 @@ def main():
     print("\n" + "="*50)
     print(f"Instructions ({new_instructions_file}) used to create {new_chapter_file}...")
     print("="*50)
-    
+
     for event in key_events:
         print(event)
     print("\n")
+
+    # Pre-processor: continuity check
+    if not args.no_preprocess:
+        key_events, instructions_text = run_preprocess(
+            key_events, instructions_text, static_lore, full_summary_text, llm, args.instructions
+        )
 
     # Generate the new story chapter
     print("\n" + "="*50)
@@ -430,8 +700,8 @@ def main():
         "Do NOT wrap up, conclude, or add any content beyond the last numbered event.\n"
         "Use simple language, short to medium sentences.\n"
         "Write in present tense throughout. Use 'Vasu strikes' not 'Vasu struck', 'she moves' not 'she moved', 'he does not hesitate' not 'he did not hesitate'. Never slip into past tense.\n"
-        "Before writing, silently assess the narrative significance of each event in this chunk. Major events — any combat, action, dramatic moment, revelation, or important character decision — deserve rich expansion (200–300 words each). All other events deserve at least 150 words — enough to feel immersive and real. Combat and action sequences are always major, even individual steps within a battle. Do not output this assessment.\n"
-        "Expand each event meaningfully with sensory details, dialogue, and character thoughts. Do not pad, but do not rush either.\n"
+        "Before writing, silently assess the narrative significance of each event in this chunk. Combat and action sequences are always major, deserving rich expansion (200–300 words each). Dialogue and negotiation scenes should be tighter — focus on what's said and decided, not internal monologue or atmosphere. Other events deserve 75–125 words. Do not output this assessment.\n"
+        "Expand each event meaningfully with sensory details, dialogue, and character thoughts. Avoid padding - if a scene is simple dialogue or transit, keep it concise.\n"
         "Do not introduce new characters or events unless requested.\n"
         "Do not add titles, headers, or numbered sections. Output pure flowing prose only.\n"
         "Open each new section with something unexpected — a sharp action, a sound, a line of dialogue, or a single vivid detail that drops the reader straight into the scene. Avoid formulaic openings like 'Morning light filtered...', 'The fire crackled...', or rolling through each character's state one by one.\n"
