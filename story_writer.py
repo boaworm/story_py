@@ -16,6 +16,8 @@ import re
 # Named constant for magic number
 MAX_KEY_EVENTS_PER_CHUNK = 5
 
+_think_prefix = "/no_think\n"
+
 def count_tokens(text: str) -> int:
     """
     Estimates the number of tokens in a string based on a word count.
@@ -34,7 +36,7 @@ def context_bar(used, total, width=30):
 
 
 def llm_invoke(llm, prompt, label, context_size):
-    response = llm.invoke(prompt)
+    response = llm.invoke(_think_prefix + prompt)
     input_tokens = 0
     if meta := getattr(response, 'response_metadata', {}):
         input_tokens = meta.get('token_usage', {}).get('prompt_tokens', 0)
@@ -87,7 +89,6 @@ def get_incremented_filename(filename):
 
 
 _EXTRACT_NAMES_PROMPT = (
-    "/no_think\n"
     "List every character name and place name that appears in the text below.\n"
     "Output one name per line, nothing else. No explanations, no numbers, no bullet points.\n\n"
     "TEXT:\n{text}\n\n"
@@ -95,7 +96,6 @@ _EXTRACT_NAMES_PROMPT = (
 )
 
 _ORDER_CHECK_PROMPT = (
-    "/no_think\n"
     "Check whether these story events are listed in a logical order.\n"
     "Identify any event stated before something it logically depends on "
     "(e.g. a battle outcome listed before the battle starts).\n\n"
@@ -511,6 +511,9 @@ def main():
 
     args = parser.parse_args()
 
+    global _think_prefix
+    _think_prefix = "" if args.enable_thinking is False else "/no_think\n"
+
     # Switch working directory if requested.
     # Do this before resolving any file defaults so all relative paths land here.
     if args.working_dir is not None:
@@ -749,7 +752,6 @@ def main():
 
     # Prompt template
     chunk_prompt_template = (
-        "/no_think\n"
         "INSTRUCTION\n"
         "You are an expert at writing engaging children's fantasy stories. \n"
         "Write ONLY the next section continuing from where the previous text ended. \n"
@@ -783,7 +785,6 @@ def main():
     )
 
     chunk_summary_prompt_template = (
-        "/no_think\n"
         "Compact and summarize this story passage into ~400 words MAX.\n"
         "Write in tight, tense prose. NO dialogue. NO emotions. NO descriptions.\n"
         "Just factual events: what happened, where they are, when, their condition, and the last moment.\n"
@@ -881,7 +882,6 @@ def main():
     print("="*50)
 
     chapter_summary_prompt_template = (
-        "/no_think\n"
         "You are a game master writing a continuity record so future chapters stay coherent.\n"
         "Summarize the chapter below in 200-400 words. Hard limit: 400 words.\n"
         "Write in plain, terse sentences. No dialogue. No descriptions. No emotions.\n"

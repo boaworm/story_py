@@ -1,6 +1,6 @@
-# Suiltable for qwen3.5 122b a10b
-# Usage: ./runQwen3.5.sh        — generate next chapter
-#        ./runQwen3.5.sh 33     — regenerate chapter 33
+# Suitable for gemma4-31b-it 16bit on Spark (192.168.1.143)
+# Usage: ./runSparkGemma4.sh        — generate next chapter
+#        ./runSparkGemma4.sh 33     — regenerate chapter 33
 if [[ "$1" =~ ^[0-9]+$ ]]; then
     chapter_arg="--regenerate $1"
 else
@@ -12,11 +12,9 @@ python story_writer.py \
 	--api_url http://192.168.1.143:8000/v1/ \
 	--model /models/gemma4-31b-it \
 	$chapter_arg \
-	--key_event_chunk_size 4 \
-	--presence_penalty 0.3 \
-	--frequency_penalty 0.85 \
-	--top_p 0.9 \
-	--temperature 1.20 \
-	--top_k 100 \
-	--min_p 0.09 \
+	--key_event_chunk_size 3 \
+	--temperature 0.9 \
+	--top_k 60 \
+	--repeat_penalty 1.05 \
+	--min_tokens 600 \
 	--disable-thinking
