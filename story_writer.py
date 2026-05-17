@@ -39,6 +39,19 @@ def llm_invoke(llm, prompt, label, context_size):
     if meta := getattr(response, 'response_metadata', {}):
         input_tokens = meta.get('token_usage', {}).get('prompt_tokens', 0)
     print(f"  {label}: {context_bar(input_tokens, context_size)}")
+    #print(f"  [DEBUG raw response] {response!r}")
+    if not getattr(response, 'content', '').strip():
+        extra = getattr(response, 'additional_kwargs', {}) or {}
+        reasoning = extra.get('reasoning_content', '')
+        other_keys = [k for k in extra if k != 'reasoning_content']
+        if reasoning:
+            print(f"  WARNING: {label} — empty content but reasoning_content present "
+                  f"({len(reasoning.split())} words). Model spent tokens on thinking "
+                  "with nothing left for the answer. Try --disable-thinking.")
+        else:
+            print(f"  WARNING: {label} — empty content, no reasoning_content. "
+                  f"additional_kwargs keys: {list(extra.keys()) or 'none'}, "
+                  f"response_metadata: {getattr(response, 'response_metadata', {})}")
     return response
 
 
@@ -316,18 +329,27 @@ def run_preprocess(key_events, instructions_text, static_lore, summary_context, 
     print()
 
     if final_corrected != key_events:
-        answer = input(f"Apply corrections to {instructions_path}? [y/N]: ").strip().lower()
-        if answer == "y":
-            new_text = _apply_corrections_to_text(instructions_text, key_events, final_corrected)
-            with open(instructions_path, "w", encoding="utf-8") as f:
-                f.write(new_text)
-            print(f"Corrections applied and saved to {instructions_path}.")
-            return final_corrected, new_text
+        while True:
+            answer = input("  [A] Accept changes  [R] Reject changes and continue with original  [C] Cancel: ").strip().upper()
+            if answer == "A":
+                new_text = _apply_corrections_to_text(instructions_text, key_events, final_corrected)
+                with open(instructions_path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+                print(f"Corrections applied and saved to {instructions_path}.")
+                return final_corrected, new_text
+            elif answer == "R":
+                break
+            elif answer == "C":
+                print("Aborting.")
+                sys.exit(0)
     else:
-        answer = input("Proceed with generation anyway? [y/N]: ").strip().lower()
-        if answer != "y":
-            print("Aborting.")
-            sys.exit(0)
+        while True:
+            answer = input("  [A] Accept and continue with original  [C] Cancel: ").strip().upper()
+            if answer == "A":
+                break
+            elif answer == "C":
+                print("Aborting.")
+                sys.exit(0)
 
     return key_events, instructions_text
 
@@ -458,6 +480,28 @@ def main():
     )
 
     parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Model name/ID to pass to the LLM API (default: 'default').",
+    )
+
+    thinking_group = parser.add_mutually_exclusive_group()
+    thinking_group.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        default=None,
+        dest="enable_thinking",
+        help="Send enable_thinking=true in the request body (Qwen3/vLLM thinking models).",
+    )
+    thinking_group.add_argument(
+        "--disable-thinking",
+        action="store_false",
+        dest="enable_thinking",
+        help="Send enable_thinking=false in the request body to suppress thinking mode.",
+    )
+
+    parser.add_argument(
         "--no-preprocess",
         action="store_true",
         default=False,
@@ -502,8 +546,8 @@ def main():
     llm_kwargs = {
         "openai_api_base": args.api_url,
         "openai_api_key": "lm-studio",
-        "model": "default",
-        "max_tokens": -1,
+        "model": args.model if args.model is not None else "default",
+        "max_tokens": 32768,
     }
     if args.temperature is not None:
         llm_kwargs["temperature"] = args.temperature
@@ -515,6 +559,9 @@ def main():
         llm_kwargs["presence_penalty"] = args.presence_penalty
 
     extra_body = {}
+    if args.enable_thinking is not None:
+        # vLLM requires this nested under chat_template_kwargs for Qwen3 thinking models
+        extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking}
     if args.min_p is not None:
         extra_body["min_p"] = args.min_p
     if args.top_k is not None:
