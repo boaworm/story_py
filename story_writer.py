@@ -2,9 +2,10 @@
 
 # Import necessary libraries
 import argparse
-import difflib
+import datetime
 import os
 import sys
+import types
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -17,30 +18,57 @@ import re
 MAX_KEY_EVENTS_PER_CHUNK = 5
 
 _think_prefix = "/no_think\n"
-
-def count_tokens(text: str) -> int:
-    """
-    Estimates the number of tokens in a string based on a word count.
-
-    This is an approximation, as actual tokenization can vary between models.
-    A common rule of thumb is that one word is roughly equal to one token.
-    """
-    return len(text.split())
+_invocation_log = []
 
 
-def context_bar(used, total, width=30):
-    pct = used / total
-    filled = int(pct * width)
-    bar = "█" * filled + "░" * (width - filled)
-    return f"{used:,} / {total:,} [{bar}] {pct*100:.1f}%"
 
 
-def llm_invoke(llm, prompt, label, context_size):
-    response = llm.invoke(_think_prefix + prompt)
-    input_tokens = 0
-    if meta := getattr(response, 'response_metadata', {}):
-        input_tokens = meta.get('token_usage', {}).get('prompt_tokens', 0)
-    print(f"  {label}: {context_bar(input_tokens, context_size)}")
+def llm_invoke(llm, prompt, label):
+    full_prompt = _think_prefix + prompt
+    chars_in = len(full_prompt)
+    t_start = datetime.datetime.now()
+    t_first_token = None
+
+    content_parts = []
+    response_metadata = {}
+    additional_kwargs = {}
+    reasoning_parts = []
+
+    for chunk in llm.stream(full_prompt):
+        chunk_content = chunk.content or ''
+        if t_first_token is None and chunk_content:
+            t_first_token = datetime.datetime.now()
+        content_parts.append(chunk_content)
+        if getattr(chunk, 'response_metadata', None):
+            response_metadata = chunk.response_metadata
+        for k, v in (getattr(chunk, 'additional_kwargs', None) or {}).items():
+            if k == 'reasoning_content':
+                reasoning_parts.append(v)
+            else:
+                additional_kwargs[k] = v
+
+    t_end = datetime.datetime.now()
+    if reasoning_parts:
+        additional_kwargs['reasoning_content'] = ''.join(reasoning_parts)
+
+    response = types.SimpleNamespace(
+        content=''.join(content_parts),
+        response_metadata=response_metadata,
+        additional_kwargs=additional_kwargs,
+    )
+
+    chars_out = len(response.content)
+    token_usage = response_metadata.get('token_usage', {})
+    tokens_in = token_usage.get('prompt_tokens', 0) or (chars_in // 4)
+    tokens_out = token_usage.get('completion_tokens', 0) or (chars_out // 4)
+
+    _invocation_log.append({
+        "label": label,
+        "start": t_start, "first_token": t_first_token, "end": t_end,
+        "chars_in": chars_in, "chars_out": chars_out,
+        "tokens_in": tokens_in, "tokens_out": tokens_out,
+    })
+    print(f"  {label}")
     #print(f"  [DEBUG raw response] {response!r}")
     if not getattr(response, 'content', '').strip():
         extra = getattr(response, 'additional_kwargs', {}) or {}
@@ -88,270 +116,67 @@ def get_incremented_filename(filename):
     return candidate
 
 
-_EXTRACT_NAMES_PROMPT = (
-    "List every character name and place name that appears in the text below.\n"
-    "Output one name per line, nothing else. No explanations, no numbers, no bullet points.\n\n"
-    "TEXT:\n{text}\n\n"
-    "NAMES:"
-)
+def _print_benchmark_table(total_start, total_end):
+    def fmt_clock(dt):
+        return dt.strftime("%H:%M:%S")
 
-_ORDER_CHECK_PROMPT = (
-    "Check whether these story events are listed in a logical order.\n"
-    "Identify any event stated before something it logically depends on "
-    "(e.g. a battle outcome listed before the battle starts).\n\n"
-    "KEY EVENTS:\n{key_events}\n\n"
-    "Respond in EXACTLY this format:\n"
-    "ISSUES:\n"
-    "- <one issue per line, or 'None' if the order is fine>\n\n"
-    "CORRECTED ORDER:\n"
-    "1. <event text copied verbatim>\n"
-    "2. <event text copied verbatim>\n"
-    "(List ALL events in the correct logical order. Copy each line verbatim. Only reorder, do not change any wording.)\n"
-)
+    def fmt_elapsed(delta):
+        s = int(delta.total_seconds())
+        return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
+    def tps(tokens, delta):
+        secs = delta.total_seconds()
+        return f"{tokens / secs:6.1f}" if secs > 0 and tokens > 0 else "   N/A"
 
-def _extract_known_names(summary_context, llm, context_size):
-    try:
-        response = llm_invoke(llm, _EXTRACT_NAMES_PROMPT.format(text=summary_context), "Name extraction", context_size)
-        names = []
-        for line in response.content.strip().splitlines():
-            name = line.strip().lstrip("-•*0123456789. ").strip()
-            if len(name) > 1:
-                names.append(name)
-        return names
-    except Exception:
-        return []
+    col_label = max(len("Invocation"), max((len(e["label"]) for e in _invocation_log), default=0))
+    header = (
+        f"{'Invocation':<{col_label}}  {'Start':>8}  {'Stop':>8}  {'Elapsed':>8}"
+        f"  {'Chars In':>10}  {'Chars Out':>10}"
+        f"  {'Tok In':>8}  {'TokIn/s':>8}"
+        f"  {'Tok Out':>8}  {'TokOut/s':>9}"
+    )
+    sep = "-" * len(header)
 
+    print("\n" + "=" * len(header))
+    print("LLM Invocation Benchmark")
+    print("=" * len(header))
+    print(header)
+    print(sep)
 
-def _find_name_typos(key_events, known_names):
-    if not known_names:
-        return list(key_events), []
-    corrected = []
-    issues = []
-    for event in key_events:
-        words = re.findall(r'\b[A-Z][a-zA-Z]+\b', event)
-        corrected_event = event
-        for word in dict.fromkeys(words):  # preserve order, deduplicate
-            if word in known_names:
-                continue
-            matches = difflib.get_close_matches(word, known_names, n=1, cutoff=0.8)
-            if matches:
-                correct = matches[0]
-                corrected_event = re.sub(r'\b' + re.escape(word) + r'\b', correct, corrected_event)
-                issues.append(f"'{word}' looks like a misspelling of '{correct}'")
-        corrected.append(corrected_event)
-    return corrected, issues
+    total_chars_in = total_chars_out = total_tok_in = total_tok_out = 0
+    total_prefill = datetime.timedelta()
+    total_decode = datetime.timedelta()
 
+    for e in _invocation_log:
+        total_chars_in += e["chars_in"]
+        total_chars_out += e["chars_out"]
+        total_tok_in += e["tokens_in"]
+        total_tok_out += e["tokens_out"]
 
-def _check_event_order(key_events, llm, context_size):
-    key_events_str = "\n".join(f"{i+1}. {e}" for i, e in enumerate(key_events))
-    try:
-        response = llm_invoke(llm, _ORDER_CHECK_PROMPT.format(key_events=key_events_str), "Order check", context_size)
-        text = response.content.strip()
-        issues = []
-        corrected_order = list(key_events)
+        ft = e["first_token"]
+        prefill = (ft - e["start"]) if ft else (e["end"] - e["start"])
+        decode  = (e["end"] - ft)   if ft else datetime.timedelta(0)
+        total_prefill += prefill
+        total_decode  += decode
 
-        if "ISSUES:" in text and "CORRECTED ORDER:" in text:
-            parts = text.split("CORRECTED ORDER:", 1)
-            issues_block = parts[0].replace("ISSUES:", "").strip()
-            order_block = parts[1].strip()
+        print(
+            f"{e['label']:<{col_label}}  {fmt_clock(e['start']):>8}  {fmt_clock(e['end']):>8}"
+            f"  {fmt_elapsed(e['end'] - e['start']):>8}"
+            f"  {e['chars_in']:>10,}  {e['chars_out']:>10,}"
+            f"  {e['tokens_in']:>8,}  {tps(e['tokens_in'], prefill):>8}"
+            f"  {e['tokens_out']:>8,}  {tps(e['tokens_out'], decode):>9}"
+        )
 
-            for line in issues_block.splitlines():
-                line = line.strip().lstrip("-").strip()
-                if line and line.lower() != "none":
-                    issues.append(line)
-
-            key_event_set = set(key_events)
-            seen = set()
-            corrected_lines = []
-            for line in order_block.splitlines():
-                m = re.match(r"^\d+\.\s+(.+)$", line.strip())
-                if m:
-                    candidate = m.group(1).strip()
-                    if candidate in key_event_set and candidate not in seen:
-                        corrected_lines.append(candidate)
-                        seen.add(candidate)
-            if len(corrected_lines) == len(key_events):
-                corrected_order = corrected_lines
-            else:
-                print(f"  (Warning: could not parse corrected order — matched {len(corrected_lines)}/{len(key_events)} events)")
-
-        return issues, corrected_order
-    except Exception:
-        return [], list(key_events)
-
-
-def _apply_corrections_to_text(instructions_text, original_events, corrected_events):
-    """Write corrected events back into the instructions file.
-    If only text changed (no reorder), replace lines in-place to preserve blank-line grouping.
-    If order changed, dump the events flat between the markers."""
-    order_changed = [o for o in corrected_events] != [o for o in original_events if o in corrected_events and corrected_events.index(o) == original_events.index(o)]
-    # Simpler check: same events in same sequence?
-    order_changed = corrected_events != original_events and sorted(corrected_events) == sorted(original_events)
-
-    lines = instructions_text.splitlines(keepends=True)
-    result = []
-    in_events = False
-    event_idx = 0
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "START OF KEY EVENTS:":
-            in_events = True
-            result.append(line)
-            if order_changed:
-                result.append("\n")
-                for event in corrected_events:
-                    result.append(event + "\n")
-                result.append("\n")
-        elif stripped == "END OF KEY EVENTS:":
-            in_events = False
-            result.append(line)
-        elif in_events:
-            if order_changed:
-                pass  # already written above
-            elif stripped:
-                if event_idx < len(corrected_events):
-                    ending = "\n" if line.endswith("\n") else ""
-                    result.append(corrected_events[event_idx] + ending)
-                    event_idx += 1
-                else:
-                    result.append(line)
-            else:
-                result.append(line)  # preserve blank lines
-        else:
-            result.append(line)
-
-    return "".join(result)
-
-
-_DEL   = "\033[41;97m"   # red background, bright white text  — removed chars
-_ADD   = "\033[42;97m"   # green background, bright white text — added chars
-_RESET = "\033[0m"
-
-
-def _track_changes(old_text, new_text):
-    """Return a single line showing old and new text inline, track-changes style."""
-    old_tokens = re.findall(r"\S+|\s+", old_text)
-    new_tokens = re.findall(r"\S+|\s+", new_text)
-    matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens, autojunk=False)
-    out = ""
-    for op, a0, a1, b0, b1 in matcher.get_opcodes():
-        if op == "equal":
-            out += "".join(old_tokens[a0:a1])
-        elif op == "replace":
-            out += _DEL + "".join(old_tokens[a0:a1]) + _RESET
-            out += _ADD + "".join(new_tokens[b0:b1]) + _RESET
-        elif op == "delete":
-            out += _DEL + "".join(old_tokens[a0:a1]) + _RESET
-        elif op == "insert":
-            out += _ADD + "".join(new_tokens[b0:b1]) + _RESET
-    return out
-
-
-def _render_with_changes(instructions_text, key_events, name_corrected, final_corrected):
-    """Render full instructions as one block with track-changes highlighting.
-    Diffs name_corrected vs final_corrected so only order changes produce red/green lines.
-    Equal entries are rendered with _track_changes(original, name_corrected) to show name fixes inline."""
-    # Map name_corrected text → original text for looking up originals in the diff
-    original_map = {nc: orig for orig, nc in zip(key_events, name_corrected)}
-
-    diff = list(difflib.ndiff(name_corrected, final_corrected))
-    rendered_events = []
-    for entry in diff:
-        tag = entry[:2]
-        content = entry[2:]
-        if tag == "? ":
-            continue
-        elif tag == "  ":
-            # Unchanged position: show with inline name correction if any
-            orig = original_map.get(content, content)
-            rendered_events.append(_track_changes(orig, content) if orig != content else content)
-        elif tag == "- ":
-            # Line moved away from here: show original text on red background
-            orig = original_map.get(content, content)
-            rendered_events.append(_DEL + orig + _RESET)
-        elif tag == "+ ":
-            # Line moved to here: show corrected text on green background
-            rendered_events.append(_ADD + content + _RESET)
-
-    # Embed rendered events inside the instructions file structure
-    lines = instructions_text.splitlines()
-    result = []
-    in_events = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "START OF KEY EVENTS:":
-            in_events = True
-            result.append(line)
-            result.append("")
-            for ev in rendered_events:
-                result.append(ev)
-            result.append("")
-        elif stripped == "END OF KEY EVENTS:":
-            in_events = False
-            result.append(line)
-        elif in_events:
-            pass  # replaced by rendered_events above
-        else:
-            result.append(line)
-    return "\n".join(result)
-
-
-def run_preprocess(key_events, instructions_text, static_lore, summary_context, llm, instructions_path, context_size):
-    print("\n" + "=" * 50)
-    print("Pre-processor: continuity check...")
-    print("=" * 50)
-
-    known_names = _extract_known_names(static_lore, llm, context_size)
-
-    print("  Checking for name misspellings...")
-    name_corrected, name_issues = _find_name_typos(key_events, known_names)
-
-    order_issues, order_corrected = _check_event_order(key_events, llm, context_size)
-
-    all_issues = name_issues + order_issues
-
-    if not all_issues:
-        print("No issues found.")
-        return key_events, instructions_text
-
-    print(f"\nIssues found ({len(all_issues)}):")
-    for issue in all_issues:
-        print(f"  - {issue}")
-
-    # Combine: apply name corrections on top of the order-corrected list
-    name_map = {orig: corr for orig, corr in zip(key_events, name_corrected)}
-    final_corrected = [name_map.get(e, e) for e in order_corrected]
-
-    print()
-    print(_render_with_changes(instructions_text, key_events, name_corrected, final_corrected))
-    print()
-
-    if final_corrected != key_events:
-        while True:
-            answer = input("  [A] Accept changes  [R] Reject changes and continue with original  [C] Cancel: ").strip().upper()
-            if answer == "A":
-                new_text = _apply_corrections_to_text(instructions_text, key_events, final_corrected)
-                with open(instructions_path, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-                print(f"Corrections applied and saved to {instructions_path}.")
-                return final_corrected, new_text
-            elif answer == "R":
-                break
-            elif answer == "C":
-                print("Aborting.")
-                sys.exit(0)
-    else:
-        while True:
-            answer = input("  [A] Accept and continue with original  [C] Cancel: ").strip().upper()
-            if answer == "A":
-                break
-            elif answer == "C":
-                print("Aborting.")
-                sys.exit(0)
-
-    return key_events, instructions_text
+    print(sep)
+    total_elapsed = total_end - total_start
+    print(
+        f"{'TOTAL':<{col_label}}  {fmt_clock(total_start):>8}  {fmt_clock(total_end):>8}"
+        f"  {fmt_elapsed(total_elapsed):>8}"
+        f"  {total_chars_in:>10,}  {total_chars_out:>10,}"
+        f"  {total_tok_in:>8,}  {tps(total_tok_in, total_prefill):>8}"
+        f"  {total_tok_out:>8,}  {tps(total_tok_out, total_decode):>9}"
+    )
+    print("=" * len(header))
 
 
 def main():
@@ -361,6 +186,7 @@ def main():
     """
     # Record the start time of the script
     start_time = time.time()
+    run_start_dt = datetime.datetime.now()
     
     # 1. Argument Parsing
     # ==============================================================================
@@ -499,14 +325,6 @@ def main():
         action="store_false",
         dest="enable_thinking",
         help="Send enable_thinking=false in the request body to suppress thinking mode.",
-    )
-
-    parser.add_argument(
-        "--no-preprocess",
-        action="store_true",
-        default=False,
-        dest="no_preprocess",
-        help="Skip the instructions pre-processor continuity check.",
     )
 
     args = parser.parse_args()
@@ -732,12 +550,6 @@ def main():
         print(event)
     print("\n")
 
-    # Pre-processor: continuity check
-    if not args.no_preprocess:
-        key_events, instructions_text = run_preprocess(
-            key_events, instructions_text, static_lore, full_summary_text, llm, args.instructions, args.context_size
-        )
-
     # Generate the new story chapter
     print("\n" + "="*50)
     print(f"Applying instructions to create {new_chapter_file}...")
@@ -762,6 +574,8 @@ def main():
         "STOP writing the moment you have covered the last numbered key event. Do NOT write anything after it.\n"
         "Do NOT wrap up, conclude, or add any content beyond the last numbered event.\n"
         "Use simple language, short to medium sentences.\n"
+        "Write natural, fluent prose. Never drop articles (a, an, the) or prepositions — every noun phrase must be complete. Write 'into the sun', not 'into sun'; 'by the fire', not 'by fire'. Missing articles make prose sound like a telegram or a game log, not a story.\n"
+        "The key events are GM notes written in game language. Translate them into narrative — never copy game-mechanic phrases like 'checks for traps', 'scans for weakness', or 'uses healing spell' verbatim into prose. Instead show what the character actually does, sees, and feels.\n"
         "Write in present tense throughout. Use 'Vasu strikes' not 'Vasu struck', 'she moves' not 'she moved', 'he does not hesitate' not 'he did not hesitate'. Never slip into past tense.\n"
         "Before writing, silently assess the narrative significance of each event in this chunk. Combat and action sequences are always major, deserving rich expansion (200–300 words each). Dialogue and negotiation scenes should be tighter — focus on what's said and decided, not internal monologue or atmosphere. Other events deserve 75–125 words. Do not output this assessment.\n"
         "Expand each event meaningfully with sensory details, dialogue, and character thoughts. Avoid padding - if a scene is simple dialogue or transit, keep it concise.\n"
@@ -801,7 +615,7 @@ def main():
 
     event_chunks = list(chunk_list(key_events, args.key_event_chunk_size))
 
-    background_tokens = count_tokens(full_summary_text)
+    background_tokens = len(full_summary_text) // 4
     chunk_metrics = []
     actual_model_name = "Unknown"
 
@@ -813,7 +627,7 @@ def main():
             key_events=key_events_str
         )
         try:
-            new_story_section = llm_invoke(llm, prompt, f"Chunk {idx+1}/{len(event_chunks)}", args.context_size)
+            new_story_section = llm_invoke(llm, prompt, f"Chunk {idx+1}/{len(event_chunks)}")
             whole_new_chapter += new_story_section.content.strip() + "\n\n"
         except Exception as e:
             print(f"Error generating chunk {idx+1}: {e}")
@@ -827,8 +641,10 @@ def main():
         if (metadata := getattr(new_story_section, 'response_metadata', {})) and 'token_usage' in metadata:
             input_tokens = metadata['token_usage'].get('prompt_tokens', 0)
             output_tokens = metadata['token_usage'].get('completion_tokens', 0)
-        else:
-            output_tokens = count_tokens(new_story_section.content)
+        if not input_tokens:
+            input_tokens = len(prompt) // 4
+        if not output_tokens:
+            output_tokens = len(new_story_section.content) // 4
 
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
@@ -843,7 +659,6 @@ def main():
                 llm,
                 chunk_summary_prompt.format(chunk_text=new_story_section.content.strip()),
                 f"Chunk {idx+1}/{len(event_chunks)} summary",
-                args.context_size,
             )
             summary_duration = time.time() - summary_start_time
             chunk_summary_text = chunk_summary_msg.content.strip()
@@ -851,8 +666,10 @@ def main():
             if (meta := getattr(chunk_summary_msg, 'response_metadata', {})) and 'token_usage' in meta:
                 summary_tokens = meta['token_usage'].get('completion_tokens', 0)
                 summary_input_tokens = meta['token_usage'].get('prompt_tokens', 0)
-            else:
-                summary_tokens = count_tokens(chunk_summary_text)
+            if not summary_input_tokens:
+                summary_input_tokens = len(chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())) // 4
+            if not summary_tokens:
+                summary_tokens = len(chunk_summary_text) // 4
         except Exception as e:
             print(f"Warning: chunk {idx+1} summary failed ({e}), falling back to full text.")
             summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
@@ -922,7 +739,6 @@ def main():
             llm,
             chapter_summary_prompt.format(chapter_text=whole_new_chapter),
             "Chapter summary",
-            args.context_size,
         )
     except Exception as e:
         print(f"Error generating chapter summary: {e}")
@@ -946,6 +762,10 @@ def main():
         if metadata := getattr(new_summary_message, 'response_metadata', {}):
             summary_tokens = metadata.get('token_usage', {}).get('completion_tokens', 0)
             summary_input_tokens = metadata.get('token_usage', {}).get('prompt_tokens', 0)
+        if not summary_input_tokens:
+            summary_input_tokens = len(chapter_summary_prompt.format(chapter_text=whole_new_chapter)) // 4
+        if not summary_tokens:
+            summary_tokens = len(new_summary_text) // 4
         summary_metrics = {"duration": summary_end - summary_start, "tokens": summary_tokens, "input_tokens": summary_input_tokens}
     else:
         print("Error generating summary: No response from LLM")
@@ -995,6 +815,8 @@ def main():
         avg_tps = total_tg_tokens / total_gen_duration
         print(f"\nGeneration Summary:\n  Model used:    {actual_model_name}\n  PP tokens:     {total_pp_tokens}\n  TG tokens:     {total_tg_tokens}\n  Total time:    {format_time(total_gen_duration)}\n  Avg TG perf:   {avg_tps:.2f} t/s")
 
+    run_end_dt = datetime.datetime.now()
+    _print_benchmark_table(run_start_dt, run_end_dt)
     print(f"\nTotal execution time: {format_time(end_time - start_time)}")
 
 if __name__ == "__main__":
