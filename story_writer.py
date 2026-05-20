@@ -796,10 +796,8 @@ def main():
         total_pp_tokens += input_tokens + summary_input_tokens
         total_tg_tokens += output_tokens + summary_tokens
         total_gen_duration += duration + summary_duration
-        tps = output_tokens / duration if duration > 0 else 0
-        sum_tps = summary_tokens / summary_duration if summary_duration > 0 else 0
-        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)} | pp={input_tokens} tg={output_tokens} tokens ({tps:.2f} t/s)")
-        print(f"  Rolling summary {i+1}: {format_time(summary_duration)} | pp={summary_input_tokens} tg={summary_tokens} tokens ({sum_tps:.2f} t/s)")
+        print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)}")
+        print(f"  Rolling summary {i+1}: {format_time(summary_duration)}")
 
     if summary_metrics:
         duration = summary_metrics["duration"]
@@ -808,8 +806,7 @@ def main():
         total_pp_tokens += input_tokens
         total_tg_tokens += tokens
         total_gen_duration += duration
-        tps = tokens / duration if duration > 0 else 0
-        print(f"Summarizing story: {format_time(duration)} | pp={input_tokens} tg={tokens} tokens ({tps:.2f} t/s)")
+        print(f"Summarizing story: {format_time(duration)}")
 
     if total_gen_duration > 0:
         avg_tps = total_tg_tokens / total_gen_duration
