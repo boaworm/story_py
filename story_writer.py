@@ -299,6 +299,13 @@ def main():
     )
 
     parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=32768,
+        help="Maximum tokens to generate per request (default: 32768).",
+    )
+
+    parser.add_argument(
         "--min_tokens",
         type=int,
         default=None,
@@ -368,7 +375,7 @@ def main():
         "openai_api_base": args.api_url,
         "openai_api_key": "lm-studio",
         "model": args.model if args.model is not None else "default",
-        "max_tokens": 32768,
+        "max_tokens": args.max_tokens,
     }
     if args.temperature is not None:
         llm_kwargs["temperature"] = args.temperature
@@ -380,9 +387,9 @@ def main():
         llm_kwargs["presence_penalty"] = args.presence_penalty
 
     extra_body = {}
-    if args.enable_thinking is not None:
+    if args.enable_thinking is True:
         # vLLM requires this nested under chat_template_kwargs for Qwen3 thinking models
-        extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking}
+        extra_body["chat_template_kwargs"] = {"enable_thinking": True}
     if args.min_p is not None:
         extra_body["min_p"] = args.min_p
     if args.top_k is not None:
