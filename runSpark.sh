@@ -12,9 +12,10 @@ python story_writer.py \
 	--api_url http://192.168.1.143:8000/v1/ \
 	--model current-spark-model \
 	$chapter_arg \
-	--key_event_chunk_size 3 \
+	--key_event_chunk_size 4 \
 	--temperature 0.9 \
 	--top_k 60 \
 	--repeat_penalty 1.05 \
 	--min_tokens 600 \
+	--max_tokens 2000 \
 	--disable-thinking
