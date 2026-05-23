@@ -10,11 +10,14 @@ fi
 python story_writer.py \
 	--working-dir story_py_private/dnd1 \
 	--api_url http://192.168.1.143:8000/v1/ \
-	--model /models/gemma4-31b-it \
 	$chapter_arg \
 	--key_event_chunk_size 3 \
 	--temperature 0.9 \
+	--top_p 0.9 \
 	--top_k 60 \
+	--min_p 0.09 \
+	--presence_penalty 0.3 \
+	--frequency_penalty 0.85 \
 	--repeat_penalty 1.05 \
 	--min_tokens 600 \
 	--disable-thinking

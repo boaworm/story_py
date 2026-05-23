@@ -10,7 +10,6 @@ fi
 python story_writer.py \
 	--working-dir story_py_private/dnd1 \
 	--api_url http://192.168.1.143:8000/v1/ \
-	--model /models/qwen3.5-122b-int4-autoround \
 	$chapter_arg \
 	--key_event_chunk_size 4 \
 	--presence_penalty 0.3 \

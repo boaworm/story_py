@@ -10,7 +10,6 @@ fi
 python story_writer.py \
 	--working-dir story_py_private/dnd1 \
 	--api_url http://192.168.1.143:8000/v1/ \
-	--model current-spark-model \
 	$chapter_arg \
 	--key_event_chunk_size 20 \
 	--temperature 0.60 \
