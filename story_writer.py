@@ -70,7 +70,8 @@ def llm_invoke(llm, prompt, label):
         "chars_in": chars_in, "chars_out": chars_out,
         "tokens_in": tokens_in, "tokens_out": tokens_out,
     })
-    print(f"  {label}")
+    duration_s = int((t_end - t_start).total_seconds())
+    print(f"  {label:<25} [{duration_s//3600:02d}:{(duration_s%3600)//60:02d}:{duration_s%60:02d}]")
     #print(f"  [DEBUG raw response] {response!r}")
     if not getattr(response, 'content', '').strip():
         extra = getattr(response, 'additional_kwargs', {}) or {}
@@ -339,7 +340,7 @@ def main():
     args = parser.parse_args()
 
     global _think_prefix
-    _think_prefix = "" if args.enable_thinking is False else "/no_think\n"
+    _think_prefix = "/no_think\n" if args.enable_thinking is False else ""
 
     # Switch working directory if requested.
     # Do this before resolving any file defaults so all relative paths land here.
@@ -402,15 +403,15 @@ def main():
         llm_kwargs["presence_penalty"] = args.presence_penalty
 
     extra_body = {}
-    if args.enable_thinking is True:
-        # vLLM requires this nested under chat_template_kwargs for Qwen3 thinking models
-        extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+    # Default is thinking-on; only False (--disable-thinking) suppresses it
+    extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking is not False}
     if args.min_p is not None:
         extra_body["min_p"] = args.min_p
     if args.top_k is not None:
         extra_body["top_k"] = args.top_k
     if args.repeat_penalty is not None:
-        extra_body["repeat_penalty"] = args.repeat_penalty
+        extra_body["repeat_penalty"] = args.repeat_penalty          # llama.cpp
+        extra_body["repetition_penalty"] = args.repeat_penalty      # vLLM
     if args.min_tokens is not None:
         extra_body["min_tokens"] = args.min_tokens
     if extra_body:
