@@ -73,6 +73,14 @@ Run the script using the following command structure:
 python story_writer.py --story story_background.txt --instructions instructions.txt
 ```
 
+Or use the convenience wrapper script:
+
+```bash
+./runQwen3.5.sh              # Generate new chapter
+./runQwen3.5.sh 33           # Regenerate chapter 33
+./runQwen3.5.sh --fix 51     # Review and fix chapter 51
+```
+
 ### Recommended Parameters
 
 **For gemma3-27b at q8**
@@ -115,6 +123,32 @@ python story_writer.py \
 | `--api_url` | `http://localhost:1234/v1`| The URL for the local LLM service. |
 | `--key_event_chunk_size` | `5` | Number of key events to process in each iteration. Lower = longer story. |
 | `--chapter` | `None` | Specify a chapter number to rebuild using previous summaries. |
+| `--fix` | `None` | Review and propose corrections for an existing chapter. |
+
+### Fix Mode
+
+After generating a chapter (or at any time), you can review and fix inconsistencies:
+
+```bash
+./runQwen3.5.sh --fix 51
+# or
+python story_writer.py --fix 51 --working-dir story_py_private/dnd1
+```
+
+This will:
+1. Load `chapter51_story.txt`
+2. Display the **original story**
+3. Show **proposed changes** in colored diff format (red for deletions, green for additions)
+4. Display the **full corrected story**
+5. Prompt: `Accept changes and replace original (y/N)?`
+
+Press `y` to overwrite the chapter with corrections, or any other key to keep the original.
+
+Common issues detected:
+- Character name inconsistencies
+- Repeated/duplicated content
+- Contradictions within the chapter
+- Grammar and typo issues
 
 ## Workflow Example
 

@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 import time
 from pathlib import Path
 import re
+import difflib
 
 # Named constant for magic number
 MAX_KEY_EVENTS_PER_CHUNK = 5
@@ -23,6 +24,111 @@ _think_prefix = "/no_think\n"
 _invocation_log = []
 
 
+def generate_word_diff(original_text, corrected_text):
+    """Generate a colored word-level diff, showing only context around changes."""
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    RESET = '\033[0m'
+
+    orig_lines = original_text.splitlines()
+    corr_lines = corrected_text.splitlines()
+
+    # Get line-level diff to find changed regions
+    matcher = difflib.SequenceMatcher(None, orig_lines, corr_lines)
+    ops = matcher.get_opcodes()
+
+    output_lines = []
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == 'equal':
+            continue  # Skip unchanged blocks
+        else:
+            # Show context around changes (2 lines before/after)
+            ctx_start = max(0, i1 - 2)
+            ctx_end = min(len(orig_lines), i2 + 2)
+
+            # Show preceding context
+            for k in range(ctx_start, i1):
+                output_lines.append(f"  {orig_lines[k]}")
+
+            # Show the changed block with word-level diff
+            orig_block = '\n'.join(orig_lines[i1:i2])
+            corr_block = '\n'.join(corr_lines[j1:j2])
+
+            # Word-level diff for the changed block
+            orig_words = orig_block.split()
+            corr_words = corr_block.split()
+            word_matcher = difflib.SequenceMatcher(None, orig_words, corr_words)
+            word_ops = word_matcher.get_opcodes()
+
+            diff_parts = []
+            for wtag, w1, w2, w3, w4 in word_ops:
+                if wtag == 'replace':
+                    diff_parts.append(f"{RED}-{' '.join(orig_words[w1:w2])}{RESET}")
+                    diff_parts.append(f"{GREEN}+{' '.join(corr_words[w3:w4])}{RESET}")
+                elif wtag == 'delete':
+                    diff_parts.append(f"{RED}-{' '.join(orig_words[w1:w2])}{RESET}")
+                elif wtag == 'insert':
+                    diff_parts.append(f"{GREEN}+{' '.join(corr_words[w3:w4])}{RESET}")
+                else:
+                    diff_parts.append(' '.join(orig_words[w1:w2]))
+
+            output_lines.append('  ' + ' '.join(diff_parts))
+
+            # Show following context
+            for k in range(i2, ctx_end):
+                output_lines.append(f"  {orig_lines[k]}")
+
+            output_lines.append("")  # Blank line between changes
+
+    return '\n'.join(output_lines)
+
+
+def review_and_fix_chapter(text, filename, context_text, llm):
+    """Review generated chapter and offer to apply fixes."""
+    prompt = f"""INSTRUCTION
+Review the story below and fix any inconsistencies:
+
+1. CHARACTER NAME INCONSISTENCIES: Same character with different names
+2. REPEATED CONTENT: Duplicated paragraphs or sentences
+3. CONTRADICTIONS: Events that contradict earlier parts
+4. GRAMMAR/TYPO ISSUES: Obvious typos, missing words, awkward phrasing
+
+Return ONLY the corrected story text with all fixes applied. Make minimal changes.
+
+CONTEXT:
+{context_text}
+
+STORY TO CORRECT:
+{text}
+
+CORRECTED STORY (output ONLY the fixed text):"""
+
+    response = llm_invoke(llm, prompt, "Review")
+    corrected = response.content.strip()
+
+    if not corrected or len(corrected) < len(text) * 0.9:
+        print("\nNo significant changes suggested.")
+        return text
+
+    print("\n" + "="*60)
+    print("PROPOSED CHANGES")
+    print("="*60)
+    print(generate_word_diff(text, corrected))
+
+    print("\n" + "="*60)
+    print("CORRECTED STORY")
+    print("="*60)
+    print(corrected)
+
+    resp = input("\nAccept changes and replace original (y/N)? ")
+    if resp.strip().lower() == 'y':
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(corrected + "\n")
+        print(f"Accepted: {filename} updated.")
+        return corrected
+    else:
+        print("Rejected: Original kept.")
+        return text
 
 
 def llm_invoke(llm, prompt, label):
@@ -182,6 +288,77 @@ def _print_benchmark_table(total_start, total_end):
     print("=" * len(header))
 
 
+def handle_fix_mode(args, llm):
+    """Analyze a chapter for inconsistencies and propose fixes in diff format."""
+    chapter_num = args.fix
+    story_file = Path(f"chapter{chapter_num}_story.txt")
+
+    if not story_file.is_file():
+        print(f"Error: Chapter {chapter_num} story file not found: {story_file}")
+        return
+
+    with open(story_file, "r", encoding="utf-8") as f:
+        original_text = f.read()
+
+    # Load context from previous summaries for name consistency checking
+    context_text = ""
+    summary_file = Path(f"chapter{chapter_num - 1}_summary.txt")
+    if summary_file.is_file():
+        with open(summary_file, "r", encoding="utf-8") as f:
+            context_text = f.read()
+
+    print_section("ORIGINAL STORY", original_text)
+
+    # Ask LLM to return the corrected story directly
+    fix_prompt = f"""INSTRUCTION
+Review the story below and fix any inconsistencies:
+
+1. CHARACTER NAME INCONSISTENCIES: Same character with different names
+2. REPEATED CONTENT: Duplicated paragraphs or sentences
+3. CONTRADICTIONS: Events that contradict earlier parts
+4. GRAMMAR/TYPO ISSUES: Obvious typos, missing words, awkward phrasing
+
+Return ONLY the corrected story text with all fixes applied. Make minimal changes.
+
+CONTEXT:
+{context_text}
+
+STORY TO CORRECT:
+{original_text}
+
+CORRECTED STORY (output ONLY the fixed text):"""
+
+    response = llm_invoke(llm, fix_prompt, "Review")
+    corrected_text = response.content.strip()
+
+    if not corrected_text or len(corrected_text) < len(original_text) * 0.9:
+        print("\nNo significant changes suggested.")
+        return
+
+    print("\n")
+    print_section("PROPOSED CHANGES", generate_word_diff(original_text, corrected_text))
+    print("\n")
+    print_section("CORRECTED STORY", corrected_text)
+
+    # Ask to accept/reject changes
+    print(f"\033[94m{'='*60}\033[0m")
+    resp = input("Accept changes and replace original (y/N)? ")
+    if resp.strip().lower() == 'y':
+        with open(story_file, "w", encoding="utf-8") as f:
+            f.write(corrected_text + "\n")
+        print(f"Accepted: {story_file} updated.")
+    else:
+        print("Rejected: Original kept.")
+
+
+def print_section(title, content):
+    """Print a section header and content."""
+    print(f"\033[94m{'='*60}\033[0m")
+    print(f"\033[94m{title}\033[0m")
+    print(f"\033[94m{'='*60}\033[0m")
+    print(content)
+
+
 def main():
     """
     Main function to parse arguments, load files, and execute the summarization and instruction chains.
@@ -242,6 +419,13 @@ def main():
         type=int,
         default=None,
         help="Regenerate a specific chapter, discarding its story and summary before rewriting.",
+    )
+
+    parser.add_argument(
+        "--fix",
+        type=int,
+        default=None,
+        help="Analyze and propose fixes for inconsistencies in a specific chapter (wrong names, repetitions, etc.).",
     )
 
     parser.add_argument(
@@ -423,6 +607,11 @@ def main():
     except Exception as e:
         print(f"Failed to connect to the LLM service at {args.api_url}.")
         print(f"Error: {e}")
+        return
+
+    # Handle --fix mode: analyze and propose corrections for inconsistencies
+    if args.fix is not None:
+        handle_fix_mode(args, llm)
         return
 
     # Narrative Retelling Process
@@ -715,6 +904,9 @@ def main():
     print("\n" + "="*50)
     print(whole_new_chapter)
     print("="*50)
+
+    # Review and offer fixes for the new chapter
+    whole_new_chapter = review_and_fix_chapter(whole_new_chapter, new_chapter_file, full_summary_text, llm)
 
     # Generate summary
     # ==============================================================================
