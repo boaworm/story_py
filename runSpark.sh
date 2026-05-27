@@ -1,4 +1,4 @@
-# Suitable for gpt-oss-120b on Spark (192.168.1.143)
+# Suitable for non-thinking models on Spark (192.168.1.143) e.g. gpt-oss-120b
 # Usage: ./runSpark.sh        — generate next chapter
 #        ./runSpark.sh 33     — regenerate chapter 33
 if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -19,5 +19,4 @@ python story_writer.py \
 	--presence_penalty 0.3 \
 	--frequency_penalty 0.85 \
 	--min_tokens 300 \
-	--max_tokens 4000 \
-	--disable-thinking
+	--max_tokens 4000

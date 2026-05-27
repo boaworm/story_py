@@ -587,8 +587,10 @@ def main():
         llm_kwargs["presence_penalty"] = args.presence_penalty
 
     extra_body = {}
-    # Default is thinking-on; only False (--disable-thinking) suppresses it
-    extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking is not False}
+    # Only send chat_template_kwargs when the user explicitly requested thinking control.
+    # Some backends (e.g. Mistral tokenizers) reject this parameter entirely.
+    if args.enable_thinking is not None:
+        extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking}
     if args.min_p is not None:
         extra_body["min_p"] = args.min_p
     if args.top_k is not None:

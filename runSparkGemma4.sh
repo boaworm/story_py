@@ -19,5 +19,4 @@ python story_writer.py \
 	--presence_penalty 0.3 \
 	--frequency_penalty 0.85 \
 	--repeat_penalty 1.05 \
-	--min_tokens 600 \
-	--disable-thinking
+	--min_tokens 600
