@@ -611,6 +611,20 @@ def main():
         print(f"Error: {e}")
         return
 
+    # Separate low-temperature LLM for fix/review passes — precise editing
+    # should not be subject to creative sampling parameters
+    fix_llm_kwargs = {
+        "openai_api_base": args.api_url,
+        "openai_api_key": "lm-studio",
+        "model": model_name,
+        "max_tokens": args.max_tokens,
+        "temperature": 0.1,
+    }
+    try:
+        fix_llm = ChatOpenAI(**fix_llm_kwargs)
+    except Exception:
+        fix_llm = llm  # fall back to main llm if this fails
+
     # Handle --fix mode: analyze and propose corrections for inconsistencies
     if args.fix is not None:
         handle_fix_mode(args, llm)
@@ -795,7 +809,7 @@ def main():
         "Expand each event meaningfully with sensory details, dialogue, and character thoughts. Avoid padding - if a scene is simple dialogue or transit, keep it concise.\n"
         "Do not introduce new characters, locations, or events unless they appear in the key events below.\n"
         "Do not add titles, headers, or numbered sections. Output pure flowing prose only.\n"
-        "Open each new section with something unexpected — a sharp action, a sound, a line of dialogue, or a single vivid detail that drops the reader straight into the scene. Avoid formulaic openings like 'Morning light filtered...', 'The fire crackled...', or rolling through each character's state one by one.\n"
+        "Open each new section with something unexpected — a sharp action, a sound, a line of dialogue, or a single vivid detail that drops the reader straight into the scene. Avoid formulaic openings like 'Morning light filtered...', 'The fire crackled...', or rolling through each character's state one by one. Never open by listing party members with their signature items ('Calder gripped his staff, Henrik raised his shield...'). That is a roster, not an opening.\n"
         "NEVER reproduce or paraphrase any key event text as a header, label, or sentence opener.\n"
         "Vary your sentence openings. Never start more than two sentences in a row with the same word, especially pronouns like 'He', 'She', or 'They'. Break up pronoun runs by starting with the character's name, an action ('Reaching into his pack...'), a detail ('Eyes wide, he...'), or a prepositional phrase ('From across the room...').\n"
         "ALL party members present in the background must appear or be referenced in the narrative. Do not drop any character.\n"
@@ -804,6 +818,7 @@ def main():
         "END OF BACKGROUND\n\n"
         "BEGINNING OF KEY EVENTS (MUST ALL BE COVERED, IN ORDER, NONE SKIPPED)\n{key_events}\n"
         "END OF KEY EVENTS\n\n"
+        "When writing the final event in this chunk, close on a concrete image, action, or line of dialogue. Do NOT follow it with a thematic summary, philosophical reflection, or abstract wrap-up sentence. The last sentence must describe something that actually happens — not what it means.\n"
         "*** HARD STOP: As soon as the last numbered event above is written, stop immediately. Write nothing after it. ***\n\n"
         "Write the continuation now, covering every single numbered event above, starting immediately after where the previous text ended. Stop the moment the last event is done:\n"
     )
@@ -907,8 +922,8 @@ def main():
     print(whole_new_chapter)
     print("="*50)
 
-    # Review and offer fixes for the new chapter
-    whole_new_chapter = review_and_fix_chapter(whole_new_chapter, new_chapter_file, full_summary_text, llm)
+    # Review and offer fixes for the new chapter (use low-temp fix_llm for precision)
+    whole_new_chapter = review_and_fix_chapter(whole_new_chapter, new_chapter_file, full_summary_text, fix_llm)
 
     # Generate summary
     # ==============================================================================

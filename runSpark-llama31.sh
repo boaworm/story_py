@@ -25,7 +25,7 @@ python story_writer.py \
 	$chapter_arg \
 	$min_p_arg \
 	--key_event_chunk_size 2 \
-	--temperature 1.2 \
+	--temperature 0.9 \
 	--top_p 0.87 \
 	--top_k 50 \
 	--presence_penalty 0.2 \
