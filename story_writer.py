@@ -8,7 +8,7 @@ import sys
 import types
 import urllib.request
 import json
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -143,7 +143,7 @@ def llm_invoke(llm, prompt, label):
     reasoning_parts = []
 
     for chunk in llm.stream(full_prompt):
-        chunk_content = chunk.content or ''
+        chunk_content = (chunk.content if hasattr(chunk, 'content') else chunk) or ''
         if t_first_token is None and chunk_content:
             t_first_token = datetime.datetime.now()
         content_parts.append(chunk_content)
@@ -521,6 +521,16 @@ def main():
         help="Send enable_thinking=false in the request body to suppress thinking mode.",
     )
 
+    parser.add_argument(
+        "--openai-chat-completions",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        dest="openai_chat_completions",
+        help="1 = ChatOpenAI (/v1/chat/completions, for Instruct models); "
+             "0 = OpenAI (/v1/completions, for base models).",
+    )
+
     args = parser.parse_args()
 
     global _think_prefix
@@ -603,9 +613,10 @@ def main():
     if extra_body:
         llm_kwargs["extra_body"] = extra_body
 
+    llm_cls = ChatOpenAI if args.openai_chat_completions == 1 else OpenAI
     try:
-        llm = ChatOpenAI(**llm_kwargs)
-        print(f"Connected to LLM at {args.api_url}")
+        llm = llm_cls(**llm_kwargs)
+        print(f"Connected to LLM at {args.api_url} ({'chat' if args.openai_chat_completions else 'completion'} mode)")
     except Exception as e:
         print(f"Failed to connect to the LLM service at {args.api_url}.")
         print(f"Error: {e}")
@@ -621,7 +632,7 @@ def main():
         "temperature": 0.1,
     }
     try:
-        fix_llm = ChatOpenAI(**fix_llm_kwargs)
+        fix_llm = llm_cls(**fix_llm_kwargs)
     except Exception:
         fix_llm = llm  # fall back to main llm if this fails
 
