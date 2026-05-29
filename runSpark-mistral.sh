@@ -31,5 +31,5 @@ PYTHONUNBUFFERED=1 python story_writer.py \
 	--top_k 50 \
 	--presence_penalty 0.2 \
 	--frequency_penalty 0.3 \
-	--min_tokens 200 \
+	--min_tokens 600 \
 	--max_tokens 4000

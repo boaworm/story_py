@@ -23,6 +23,7 @@ MAX_KEY_EVENTS_PER_CHUNK = 5
 _think_prefix = "/no_think\n"
 _stop_tokens = []
 _invocation_log = []
+_debug = False
 
 
 def generate_word_diff(original_text, corrected_text):
@@ -84,42 +85,199 @@ def generate_word_diff(original_text, corrected_text):
     return '\n'.join(output_lines)
 
 
-def review_and_fix_chapter(text, filename, context_text, llm):
-    """Review generated chapter and offer to apply fixes."""
-    prompt = f"""INSTRUCTION
-Review the story below and fix any inconsistencies:
+FIX_PROMPT_TEMPLATE = """INSTRUCTION
+Review the numbered paragraphs below and return a JSON list of small, surgical edits.
+You may propose ONLY these two kinds of edits:
 
-1. CHARACTER NAME INCONSISTENCIES: Same character with different names
-2. REPEATED CONTENT: Duplicated paragraphs or sentences
-3. CONTRADICTIONS: Events that contradict earlier parts
-4. GRAMMAR/TYPO ISSUES: Obvious typos, missing words, awkward phrasing
+1. REPLACEMENTS for misspelled words or wrong character names.
+2. DELETIONS of entire paragraphs that duplicate an earlier paragraph (same event narrated twice).
 
-Return ONLY the corrected story text with all fixes applied. Make minimal changes.
+Do NOT propose rewrites, paraphrases, additions, stylistic changes, or continuity-filler.
+Do NOT invent backstory or explanatory content.
+Do NOT invent typos or name errors that are not actually present in the text.
+If nothing needs fixing, return {{"replacements": [], "delete_paragraphs": []}}. An empty result is a perfectly valid and common answer.
 
-CONTEXT:
+OUTPUT DISCIPLINE — read carefully:
+- Output ONLY the JSON object. No analysis, no commentary, no markdown fences, no <think> tags.
+- Each "why" field MUST be a single short sentence under 20 words. Do not put reasoning into "why".
+- Do your reasoning silently before writing the JSON. Once you start emitting JSON, do not stop or restart.
+
+Output format (JSON only, no prose, no markdown fences):
+{{
+  "replacements": [
+    {{
+      "paragraph": <number>,
+      "find": "exact wrong string copied verbatim from the text",
+      "replace": "correct string",
+      "context": "5-10 words from the same paragraph that include the 'find' string verbatim",
+      "why": "short reason"
+    }}
+  ],
+  "delete_paragraphs": [
+    {{"paragraph": <number>, "why": "duplicate of paragraph N"}}
+  ]
+}}
+
+Rules for replacements:
+- "find" MUST be a substring that appears verbatim in the cited paragraph. If you cannot quote the exact substring from the text, do NOT propose the edit.
+- "context" MUST be a longer substring from the same paragraph that contains "find" verbatim. This is your proof that the wrong string is really there.
+- "paragraph" is the integer shown in [P##] at the start of the paragraph that contains "find".
+- Use replacements only for typos and wrong character names; not for rephrasing or style.
+
+Rules for deletions:
+- "paragraph" is the integer shown in [P##] at the start of each paragraph below.
+- Delete a paragraph only when it re-narrates the SAME event already covered in an earlier paragraph.
+
+CONTEXT FROM PREVIOUS CHAPTERS:
 {context_text}
 
-STORY TO CORRECT:
-{text}
+NUMBERED STORY:
+{numbered_text}
 
-CORRECTED STORY (output ONLY the fixed text):"""
+JSON OUTPUT:"""
+
+
+def _split_paragraphs(text):
+    """Split chapter text into paragraphs on blank lines, preserving order."""
+    # Normalize trailing whitespace, then split on runs of blank lines.
+    parts = re.split(r'\n\s*\n', text.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _join_paragraphs(paragraphs):
+    return "\n\n".join(paragraphs) + "\n"
+
+
+def _number_paragraphs(paragraphs):
+    return "\n\n".join(f"[P{i+1:02d}] {p}" for i, p in enumerate(paragraphs))
+
+
+def parse_fix_edits(content):
+    """Extract a JSON object from a model response. Returns dict or None.
+
+    The model sometimes wraps its real answer in a <think>...</think> block or
+    in markdown fences, and sometimes precedes the final JSON with broken
+    JSON-shaped reasoning. Strategy: prefer the LAST parseable {...} in the
+    output, after stripping any think block.
+    """
+    if not content:
+        return None
+    stripped = content
+    # Drop anything before the last </think> — that's reasoning, not the answer.
+    if '</think>' in stripped:
+        stripped = stripped.rsplit('</think>', 1)[1]
+    # Strip markdown fences anywhere.
+    stripped = re.sub(r'```(?:json)?', '', stripped).strip()
+    # Find every '{' that opens a candidate; try the LAST ones first.
+    starts = [i for i, c in enumerate(stripped) if c == '{']
+    for start in reversed(starts):
+        for end in range(len(stripped), start, -1):
+            try:
+                obj = json.loads(stripped[start:end])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and (
+                "replacements" in obj or "delete_paragraphs" in obj
+            ):
+                return obj
+    return None
+
+
+def apply_structured_edits(text, edits):
+    """Apply replacements + paragraph deletions. Returns (new_text, applied, skipped)."""
+    applied = []
+    skipped = []
+
+    new_text = text
+    original_paragraphs = _split_paragraphs(text)
+    for r in edits.get("replacements", []) or []:
+        find = r.get("find")
+        replace = r.get("replace")
+        why = r.get("why", "")
+        context = r.get("context", "")
+        para_idx = r.get("paragraph")
+        if not isinstance(find, str) or not isinstance(replace, str) or not find:
+            skipped.append(f"replace: invalid entry {r!r}")
+            continue
+        if find == replace:
+            skipped.append(f"replace: no-op ('{find}' -> '{replace}') — model proposed an identity replacement ({why})")
+            continue
+        if find not in new_text:
+            skipped.append(f"replace: '{find}' not found in text ({why})")
+            continue
+        # Anchor check: the model must quote a context snippet that genuinely
+        # contains the find string and lives in the cited paragraph. This
+        # filters hallucinated edits where the model invents a plausible typo.
+        if not isinstance(context, str) or not context or find not in context:
+            skipped.append(f"replace: '{find}' context missing or doesn't contain find string — likely hallucinated ({why})")
+            continue
+        if not isinstance(para_idx, int) or para_idx < 1 or para_idx > len(original_paragraphs):
+            skipped.append(f"replace: '{find}' paragraph index {para_idx!r} invalid — likely hallucinated ({why})")
+            continue
+        if context not in original_paragraphs[para_idx - 1]:
+            skipped.append(f"replace: '{find}' context not found in paragraph {para_idx} — likely hallucinated ({why})")
+            continue
+        count = new_text.count(find)
+        new_text = new_text.replace(find, replace)
+        applied.append(f"replace P{para_idx}: '{find}' -> '{replace}' (x{count}) — {why}")
+
+    paragraphs = _split_paragraphs(new_text)
+    delete_indices = set()
+    for d in edits.get("delete_paragraphs", []) or []:
+        idx = d.get("paragraph")
+        why = d.get("why", "")
+        if not isinstance(idx, int) or idx < 1 or idx > len(paragraphs):
+            skipped.append(f"delete: invalid paragraph index {idx!r}")
+            continue
+        delete_indices.add(idx - 1)
+        applied.append(f"delete paragraph {idx}: {why}")
+
+    if delete_indices:
+        paragraphs = [p for i, p in enumerate(paragraphs) if i not in delete_indices]
+        new_text = _join_paragraphs(paragraphs)
+
+    return new_text, applied, skipped
+
+
+def review_and_fix_chapter(text, filename, context_text, llm):
+    """Review generated chapter and offer to apply fixes."""
+    paragraphs = _split_paragraphs(text)
+    numbered = _number_paragraphs(paragraphs)
+    prompt = FIX_PROMPT_TEMPLATE.format(
+        context_text=context_text,
+        numbered_text=numbered,
+    )
 
     response = llm_invoke(llm, prompt, "Review")
-    corrected = response.content.strip()
+    edits = parse_fix_edits(response.content)
+    if not edits:
+        print("\nFix LLM returned no parseable JSON. Skipping.")
+        print("--- raw response start ---")
+        print(response.content)
+        print("--- raw response end ---")
+        return text
 
-    if not corrected or len(corrected) < len(text) * 0.9:
-        print("\nNo significant changes suggested.")
+    corrected, applied, skipped = apply_structured_edits(text, edits)
+
+    if skipped:
+        print("\nSkipped edits:")
+        for s in skipped:
+            print(f"  - {s}")
+
+    if not applied:
+        print("\nNo fixes proposed.")
         return text
 
     print("\n" + "="*60)
-    print("PROPOSED CHANGES")
+    print("PROPOSED EDITS")
     print("="*60)
-    print(generate_word_diff(text, corrected))
+    for a in applied:
+        print(f"  - {a}")
 
     print("\n" + "="*60)
-    print("CORRECTED STORY")
+    print("DIFF")
     print("="*60)
-    print(corrected)
+    print(generate_word_diff(text, corrected))
 
     resp = input("\nAccept changes and replace original (y/N)? ")
     if resp.strip().lower() == 'y':
@@ -134,6 +292,11 @@ CORRECTED STORY (output ONLY the fixed text):"""
 
 def llm_invoke(llm, prompt, label):
     full_prompt = _think_prefix + prompt
+
+    if _debug and hasattr(llm, 'client') and hasattr(llm.client, '_client'):
+        print(f"  [DEBUG] extra_body on client: {getattr(llm, 'extra_body', 'NOT SET')}")
+        print(f"  [DEBUG] model_kwargs: {getattr(llm, 'model_kwargs', {})}")
+
     chars_in = len(full_prompt)
     t_start = datetime.datetime.now()
     t_first_token = None
@@ -308,45 +471,41 @@ def handle_fix_mode(args, llm):
         with open(summary_file, "r", encoding="utf-8") as f:
             context_text = f.read()
 
-    print_section("ORIGINAL STORY", original_text)
-
-    # Ask LLM to return the corrected story directly
-    fix_prompt = f"""INSTRUCTION
-Review the story below and fix any inconsistencies:
-
-1. CHARACTER NAME INCONSISTENCIES: Same character with different names
-2. REPEATED CONTENT: Duplicated paragraphs or sentences
-3. CONTRADICTIONS: Events that contradict earlier parts
-4. GRAMMAR/TYPO ISSUES: Obvious typos, missing words, awkward phrasing
-
-Return ONLY the corrected story text with all fixes applied. Make minimal changes.
-
-CONTEXT:
-{context_text}
-
-STORY TO CORRECT:
-{original_text}
-
-CORRECTED STORY (output ONLY the fixed text):"""
+    paragraphs = _split_paragraphs(original_text)
+    numbered = _number_paragraphs(paragraphs)
+    fix_prompt = FIX_PROMPT_TEMPLATE.format(
+        context_text=context_text,
+        numbered_text=numbered,
+    )
 
     response = llm_invoke(llm, fix_prompt, "Review")
-    corrected_text = response.content.strip()
-
-    if not corrected_text or len(corrected_text) < len(original_text) * 0.9:
-        print("\nNo significant changes suggested.")
+    edits = parse_fix_edits(response.content)
+    if not edits:
+        print("\nFix LLM returned no parseable JSON. Skipping.")
+        print("--- raw response start ---")
+        print(response.content)
+        print("--- raw response end ---")
         return
 
-    print("\n")
-    print_section("PROPOSED CHANGES", generate_word_diff(original_text, corrected_text))
-    print("\n")
-    print_section("CORRECTED STORY", corrected_text)
+    corrected_text, applied, skipped = apply_structured_edits(original_text, edits)
 
-    # Ask to accept/reject changes
+    if skipped:
+        print("\nSkipped edits:")
+        for s in skipped:
+            print(f"  - {s}")
+
+    if not applied:
+        print("\nNo fixes proposed.")
+        return
+
+    print_section("PROPOSED EDITS", "\n".join(f"  - {a}" for a in applied))
+    print_section("DIFF", generate_word_diff(original_text, corrected_text))
+
     print(f"\033[94m{'='*60}\033[0m")
     resp = input("Accept changes and replace original (y/N)? ")
     if resp.strip().lower() == 'y':
         with open(story_file, "w", encoding="utf-8") as f:
-            f.write(corrected_text + "\n")
+            f.write(corrected_text)
         print(f"Accepted: {story_file} updated.")
     else:
         print("Rejected: Original kept.")
@@ -368,6 +527,16 @@ def main():
     # Record the start time of the script
     start_time = time.time()
     run_start_dt = datetime.datetime.now()
+
+    import httpx
+    _original_send = httpx.Client.send
+    def _debug_send(self, request, **kwargs):
+        if _debug and b'/chat/completions' in request.url.raw_path:
+            body = json.loads(request.content)
+            print(f"  [HTTP DEBUG] top_k={body.get('top_k')}, min_p={body.get('min_p')}, "
+                  f"temp={body.get('temperature')}, freq_pen={body.get('frequency_penalty')}")
+        return _original_send(self, request, **kwargs)
+    httpx.Client.send = _debug_send
     
     # 1. Argument Parsing
     # ==============================================================================
@@ -540,10 +709,17 @@ def main():
         help="Prompt template to use, matched to a file in templates/. Default: qwen.",
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print extra debug info about sampling params and outgoing HTTP requests.",
+    )
+
     args = parser.parse_args()
 
-    global _think_prefix
+    global _think_prefix, _debug
     _think_prefix = "/no_think\n" if args.enable_thinking is False else ""
+    _debug = args.debug
 
     # Switch working directory if requested.
     # Do this before resolving any file defaults so all relative paths land here.
@@ -640,12 +816,26 @@ def main():
 
     # Separate low-temperature LLM for fix/review passes — precise editing
     # should not be subject to creative sampling parameters
+    fix_extra_body = {
+        "top_k": 20,
+        "min_p": 0.1,
+        "repeat_penalty": 1.05,
+        "repetition_penalty": 1.05,
+    }
+    # Mirror the main LLM's thinking-control: if the user explicitly set
+    # --disable-thinking / --enable-thinking, pass it through to the fix LLM
+    # via chat_template_kwargs (the reliable Qwen channel). The /no_think
+    # prompt prefix added by llm_invoke is a softer hint and not enough.
+    if args.enable_thinking is not None:
+        fix_extra_body["chat_template_kwargs"] = {"enable_thinking": args.enable_thinking}
+
     fix_llm_kwargs = {
         "openai_api_base": args.api_url,
         "openai_api_key": "lm-studio",
         "model": model_name,
         "max_tokens": args.max_tokens,
         "temperature": 0.1,
+        "extra_body": fix_extra_body,
     }
     try:
         fix_llm = llm_cls(**fix_llm_kwargs)
@@ -947,8 +1137,9 @@ def main():
     print(whole_new_chapter)
     print("="*50)
 
-    # Review and offer fixes for the new chapter (use low-temp fix_llm for precision)
-    whole_new_chapter = review_and_fix_chapter(whole_new_chapter, new_chapter_file, full_summary_text, fix_llm)
+    # Review and offer fixes only when explicitly requested via --fix
+    if args.fix is not None:
+        whole_new_chapter = review_and_fix_chapter(whole_new_chapter, new_chapter_file, full_summary_text, fix_llm)
 
     # Generate summary
     # ==============================================================================

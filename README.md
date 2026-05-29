@@ -83,6 +83,8 @@ Or use the convenience wrapper script:
 
 ### Recommended Parameters
 
+> **Inference backend matters.** The parameter values below are tuned for models served via **vLLM**. vLLM implements OpenAI's sampling spec strictly, while llama.cpp interprets several of the same fields very differently (most notably `frequency_penalty` and the default `repeat_penalty`). A config that produces good prose on one backend can produce run-on, period-less text on the other. See **Backend Notes** below before copying these settings to a llama.cpp setup.
+
 **For gemma3-27b at q8**
 ```bash
 python story_writer.py \
@@ -95,25 +97,39 @@ python story_writer.py \
    --repeat_penalty 1.1
 ```
 
-**For qwen3.5-122b at q5**
+**For qwen3.5-122b at q5 (vLLM)**
 ```bash
 python story_writer.py \
    --api_url http://localhost:1234 \
    --story story_background.txt \
    --instructions instructions.txt \
    --key_event_chunk_size 4 \
-   --temperature 1.20 \
+   --temperature 1.00 \
    --presence_penalty 0.3 \
-   --frequency_penalty 0.85 \
+   --frequency_penalty 0.05 \
+   --repeat_penalty 1.1 \
    --top_p 0.9 \
-   --top_k 45 \
-   --min_p 0.09
+   --top_k 100 \
+   --min_p 0.09 \
+   --disable-thinking
 ```
 
 **Notes:**
 - Write your story outline in multiples of `--key_event_chunk_size` (default 4) to avoid a lone event forming its own under-developed section.
 - `gemma3-27b` produces the best local results. `gemma4-31b` was tested but produces noticeably more compact, mechanical prose — avoid it for creative writing.
 - `qwen3.5-122b` at 122B produces output quality comparable to gemma3-27b, sometimes better, at the cost of requiring a remote/high-VRAM machine.
+
+### Backend Notes: vLLM vs llama.cpp
+
+The configuration above (and the values baked into `runQwen3.5.sh`) was iterated against a **vLLM** server. If you point the same script at a llama.cpp `llama-server`, expect the model to behave differently even with byte-identical request bodies. The main divergences we hit during tuning:
+
+- **`frequency_penalty`** — vLLM applies the strict OpenAI semantics (per-step logit reduction of `freq_penalty × occurrence_count`). High values quickly suppress the most common tokens, including `.`, until the model literally cannot end a sentence and the output collapses into a run-on. llama.cpp's OpenAI-compat layer historically applies this much more weakly (or near no-op), so a value like `0.85` is harmless there and lethal on vLLM. We settled at `0.05` on vLLM and rely on `repeat_penalty` for actual repetition control.
+- **`repeat_penalty` default** — llama.cpp uses `1.1` as a baked-in default even when the request doesn't include the field. vLLM defaults to `1.0` (no penalty). If you port a llama.cpp config to vLLM and don't pass `--repeat_penalty` explicitly, you'll lose repetition control entirely.
+- **`chat_template_kwargs.enable_thinking`** — vLLM forwards this to the tokenizer's chat template (Qwen3-style thinking on/off). llama.cpp ignores it. The `--disable-thinking` flag sets both this and the `/no_think` prompt prefix, so it works on both, but only the prefix takes effect on llama.cpp.
+- **Stop tokens** — vLLM honours `stop` strings exactly; llama.cpp also stops on the model's EOS token regardless. If you ever see runaway output on vLLM, double-check that the stop list matches the model family (Qwen uses `<|im_end|>` / `<|endoftext|>`, not the Llama-3 tokens hard-coded by default).
+- **Debugging** — start vLLM with `--enable-log-requests`; it then logs the resolved `SamplingParams` per request, which is the only reliable way to confirm what actually reached the sampler. llama.cpp's server logs are less explicit.
+
+If you're running llama.cpp and the output looks fine, leave the existing penalties alone — the historical config (`frequency_penalty 0.85`, no explicit `repeat_penalty`) was originally tuned there. Just don't switch backends without also revisiting these numbers.
 
 ### CLI Arguments
 | Argument | Default | Description |
