@@ -21,6 +21,7 @@ import difflib
 MAX_KEY_EVENTS_PER_CHUNK = 5
 
 _think_prefix = "/no_think\n"
+_stop_tokens = []
 _invocation_log = []
 
 
@@ -142,7 +143,7 @@ def llm_invoke(llm, prompt, label):
     additional_kwargs = {}
     reasoning_parts = []
 
-    for chunk in llm.stream(full_prompt):
+    for chunk in llm.stream(full_prompt, stop=_stop_tokens or None):
         chunk_content = (chunk.content if hasattr(chunk, 'content') else chunk) or ''
         if t_first_token is None and chunk_content:
             t_first_token = datetime.datetime.now()
@@ -531,6 +532,14 @@ def main():
              "0 = OpenAI (/v1/completions, for base models).",
     )
 
+    parser.add_argument(
+        "--template-model",
+        type=str,
+        default="qwen",
+        dest="template_model",
+        help="Prompt template to use, matched to a file in templates/. Default: qwen.",
+    )
+
     args = parser.parse_args()
 
     global _think_prefix
@@ -579,6 +588,13 @@ def main():
         except Exception as e:
             model_name = "default"
             print(f"Model auto-detect failed ({e}), using '{model_name}'")
+
+    # Completion mode needs extra stop strings to catch base-model echo patterns
+    if args.openai_chat_completions == 0:
+        stop_tokens += ["\n### Prompt:", "\n## Prompt:", "\nOUTPUT THE NEXT", "\nKEY EVENTS:", "\nEND OF KEY EVENTS", "\nBEGINNING OF KEY EVENTS"]
+
+    global _stop_tokens
+    _stop_tokens = stop_tokens
 
     # Build kwargs only for parameters that were explicitly provided
     llm_kwargs = {
@@ -801,8 +817,18 @@ def main():
 
     Path(new_chapter_file).unlink(missing_ok=True)
 
-    # Prompt template
-    chunk_prompt_template = (
+    # Load prompt template from file
+    template_path = Path(__file__).parent / "templates" / f"{args.template_model}.txt"
+    if not template_path.is_file():
+        print(f"Error: Template '{args.template_model}' not found at {template_path}")
+        return
+    with open(template_path, "r", encoding="utf-8") as f:
+        chunk_prompt_template = f.read()
+
+    # Prompt template — base completion mode (Option A)
+    # Keeps the full instruction block and key events, but ends with a prose seed
+    # so the base model predicts story text rather than more prompt format.
+    chunk_prompt_template_completion = (
         "INSTRUCTION\n"
         "You are an expert at writing engaging children's fantasy stories.\n"
         "Write ONLY the next section continuing from where the previous text ended.\n"
@@ -810,33 +836,21 @@ def main():
         "Each numbered event is mandatory. Do not skip, merge, or omit any event.\n"
         "Each event MUST happen sequentially in the order listed. Do not reorder.\n"
         "DO NOT repeat or rewrite any part of the previous story.\n"
-        "STOP writing the moment you have covered the last numbered key event. Do NOT write anything after it.\n"
-        "Do NOT wrap up, conclude, or add any content beyond the last numbered event.\n"
         "Use simple language, short to medium sentences.\n"
-        "Write natural, fluent prose. Never drop articles (a, an, the) or prepositions — every noun phrase must be complete. Write 'into the sun', not 'into sun'; 'by the fire', not 'by fire'. Missing articles make prose sound like a telegram or a game log, not a story.\n"
-        "The key events are GM notes written in game language. Translate them into narrative — never copy game-mechanic phrases like 'checks for traps', 'scans for weakness', or 'uses healing spell' verbatim into prose. Instead show what the character actually does, sees, and feels.\n"
-        "PRESENT TENSE ONLY. Use 'Vasu strikes' not 'Vasu struck', 'she moves' not 'she moved', 'he does not hesitate' not 'he did not hesitate'. Never slip into past tense.\n"
-        "Before writing, silently assess the narrative significance of each event in this chunk. Combat and action sequences are always major, deserving rich expansion (200–300 words each). Dialogue and negotiation scenes should be tighter — focus on what's said and decided, not internal monologue or atmosphere. Other events deserve 75–125 words. Do not output this assessment.\n"
-        "Expand each event meaningfully with sensory details, dialogue, and character thoughts. Avoid padding - if a scene is simple dialogue or transit, keep it concise.\n"
-        "Do not introduce new characters, locations, or events unless they appear in the key events below.\n"
+        "Write natural, fluent prose. Never drop articles (a, an, the) or prepositions — every noun phrase must be complete.\n"
+        "The key events are GM notes written in game language. Translate them into narrative.\n"
+        "PRESENT TENSE ONLY.\n"
         "Do not add titles, headers, or numbered sections. Output pure flowing prose only.\n"
-        "Open each new section with something unexpected — a sharp action, a sound, a line of dialogue, or a single vivid detail that drops the reader straight into the scene. Avoid formulaic openings like 'Morning light filtered...', 'The fire crackled...', or rolling through each character's state one by one. Never open by listing party members with their signature items ('Calder gripped his staff, Henrik raised his shield...'). That is a roster, not an opening.\n"
-        "NEVER reproduce or paraphrase any key event text as a header, label, or sentence opener.\n"
-        "Vary your sentence openings. Never start more than two sentences in a row with the same word, especially pronouns like 'He', 'She', or 'They'. Break up pronoun runs by starting with the character's name, an action ('Reaching into his pack...'), a detail ('Eyes wide, he...'), or a prepositional phrase ('From across the room...').\n"
-        "ALL party members present in the background must appear or be referenced in the narrative. Do not drop any character.\n"
-        "ONLY OUTPUT THE NEW CONTINUATION, directly related to key events below.\n"
+        "ALL party members present in the background must appear or be referenced in the narrative.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
         "END OF BACKGROUND\n\n"
-        "BEGINNING OF KEY EVENTS (MUST ALL BE COVERED, IN ORDER, NONE SKIPPED)\n{key_events}\n"
-        "END OF KEY EVENTS\n\n"
-        "When writing the final event in this chunk, close on a concrete image, action, or line of dialogue. Do NOT follow it with a thematic summary, philosophical reflection, or abstract wrap-up sentence. The last sentence must describe something that actually happens — not what it means.\n"
-        "*** HARD STOP: As soon as the last numbered event above is written, stop immediately. Write nothing after it. ***\n\n"
-        "Write the continuation now, covering every single numbered event above, starting immediately after where the previous text ended. Stop the moment the last event is done:\n"
+        "KEY EVENTS TO COVER IN ORDER:\n{key_events}\n\n"
+        "The story continues:\n\n"
     )
 
     chunk_prompt = PromptTemplate(
         input_variables=["previous_story", "key_events"],
-        template=chunk_prompt_template
+        template=chunk_prompt_template if args.openai_chat_completions == 1 else chunk_prompt_template_completion
     )
 
     chunk_summary_prompt_template = (

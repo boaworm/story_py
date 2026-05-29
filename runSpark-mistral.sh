@@ -19,8 +19,9 @@ else
     min_p_arg="--min_p 0.05"
 fi
 
-python story_writer.py \
+PYTHONUNBUFFERED=1 python story_writer.py \
 	--working-dir story_py_private/dnd1 \
+	--template-model mistral \
 	--api_url http://192.168.1.143:8000/v1/ \
 	$chapter_arg \
 	$min_p_arg \

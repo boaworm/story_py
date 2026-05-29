@@ -19,12 +19,13 @@ else
     min_p_arg="--min_p 0.05"
 fi
 
-python story_writer.py \
+PYTHONUNBUFFERED=1 python story_writer.py \
+	--openai-chat-completions 0 \
 	--working-dir story_py_private/dnd1 \
 	--api_url http://192.168.1.143:8000/v1/ \
 	$chapter_arg \
 	$min_p_arg \
-	--key_event_chunk_size 2 \
+	--key_event_chunk_size 6 \
 	--temperature 0.9 \
 	--top_p 0.87 \
 	--top_k 50 \
