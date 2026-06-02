@@ -1025,7 +1025,7 @@ def main():
         "You MUST cover EVERY numbered key event listed below, in order, without skipping any.\n"
         "Each numbered event is mandatory. Do not skip, merge, or omit any event.\n"
         "Each event MUST happen sequentially in the order listed. Do not reorder.\n"
-        "DO NOT repeat or rewrite any part of the previous story.\n"
+        "DO NOT repeat, rewrite, or re-narrate any part of the previous story or the earlier-in-this-chapter section. Treat them as fixed canon and continue forward only.\n"
         "Use simple language, short to medium sentences.\n"
         "Write natural, fluent prose. Never drop articles (a, an, the) or prepositions — every noun phrase must be complete.\n"
         "The key events are GM notes written in game language. Translate them into narrative.\n"
@@ -1034,29 +1034,20 @@ def main():
         "ALL party members present in the background must appear or be referenced in the narrative.\n"
         "BEGINNING OF BACKGROUND\n{previous_story}\n"
         "END OF BACKGROUND\n\n"
+        "EARLIER IN THIS CHAPTER (already written — DO NOT rewrite, repeat, or re-narrate any of this; pick up immediately after the last sentence):\n{previous_chunks_text}\n"
+        "END OF EARLIER IN THIS CHAPTER\n\n"
         "KEY EVENTS TO COVER IN ORDER:\n{key_events}\n\n"
         "The story continues:\n\n"
     )
 
     chunk_prompt = PromptTemplate(
-        input_variables=["previous_story", "key_events"],
+        input_variables=["previous_story", "previous_chunks_text", "key_events"],
         template=chunk_prompt_template if args.openai_chat_completions == 1 else chunk_prompt_template_completion
     )
 
-    chunk_summary_prompt_template = (
-        "Compact and summarize this story passage into ~400 words MAX.\n"
-        "Write in tight, tense prose. NO dialogue. NO emotions. NO descriptions.\n"
-        "Just factual events: what happened, where they are, when, their condition, and the last moment.\n"
-        "Output ONLY the summary paragraph, no lists or introductions.\n"
-        "\nPASSAGE:\n{chunk_text}\n\nSUMMARY:"
-    )
-    chunk_summary_prompt = PromptTemplate(
-        input_variables=["chunk_text"],
-        template=chunk_summary_prompt_template
-    )
-
     whole_new_chapter = ""
-    summary_plus_new_story = full_summary_text
+    previous_chunks_text = ""
+    first_chunk_placeholder = "(none — this is the first section of the chapter)"
 
     event_chunks = list(chunk_list(key_events, args.key_event_chunk_size))
 
@@ -1068,12 +1059,15 @@ def main():
         chunk_start = time.time()
         key_events_str = "\n".join(f"{i+1}. {event}" for i, event in enumerate(chunk))
         prompt = chunk_prompt.format(
-            previous_story=summary_plus_new_story,
+            previous_story=full_summary_text,
+            previous_chunks_text=previous_chunks_text if previous_chunks_text else first_chunk_placeholder,
             key_events=key_events_str
         )
         try:
             new_story_section = llm_invoke(llm, prompt, f"Chunk {idx+1}/{len(event_chunks)}")
-            whole_new_chapter += new_story_section.content.strip() + "\n\n"
+            chunk_text = new_story_section.content.strip()
+            whole_new_chapter += chunk_text + "\n\n"
+            previous_chunks_text += chunk_text + "\n\n"
         except Exception as e:
             print(f"Error generating chunk {idx+1}: {e}")
             break
@@ -1094,38 +1088,13 @@ def main():
         if metadata := getattr(new_story_section, 'response_metadata', {}):
             actual_model_name = metadata.get('model_name', actual_model_name)
 
-        # Summarise the chunk and use that as rolling context instead of full text
-        summary_tokens = 0
-        summary_input_tokens = 0
-        summary_duration = 0
-        try:
-            summary_start_time = time.time()
-            chunk_summary_msg = llm_invoke(
-                llm,
-                chunk_summary_prompt.format(chunk_text=new_story_section.content.strip()),
-                f"Chunk {idx+1}/{len(event_chunks)} summary",
-            )
-            summary_duration = time.time() - summary_start_time
-            chunk_summary_text = chunk_summary_msg.content.strip()
-            summary_plus_new_story += f"\n{chunk_summary_text}"
-            if (meta := getattr(chunk_summary_msg, 'response_metadata', {})) and 'token_usage' in meta:
-                summary_tokens = meta['token_usage'].get('completion_tokens', 0)
-                summary_input_tokens = meta['token_usage'].get('prompt_tokens', 0)
-            if not summary_input_tokens:
-                summary_input_tokens = len(chunk_summary_prompt.format(chunk_text=new_story_section.content.strip())) // 4
-            if not summary_tokens:
-                summary_tokens = len(chunk_summary_text) // 4
-        except Exception as e:
-            print(f"Warning: chunk {idx+1} summary failed ({e}), falling back to full text.")
-            summary_plus_new_story += "\nxx\n" + new_story_section.content.strip()
-
         chunk_metrics.append({
             "duration": duration,
-            "summary_duration": summary_duration,
+            "summary_duration": 0,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "summary_tokens": summary_tokens,
-            "summary_input_tokens": summary_input_tokens,
+            "summary_tokens": 0,
+            "summary_input_tokens": 0,
         })
 
     print(f"New chapter written to {new_chapter_file}")
@@ -1246,7 +1215,8 @@ def main():
         total_tg_tokens += output_tokens + summary_tokens
         total_gen_duration += duration + summary_duration
         print(f"Generating chunk {i+1} of {len(chunk_metrics)}: {format_time(duration)}")
-        print(f"  Rolling summary {i+1}: {format_time(summary_duration)}")
+        if summary_duration:
+            print(f"  Rolling summary {i+1}: {format_time(summary_duration)}")
 
     if summary_metrics:
         duration = summary_metrics["duration"]

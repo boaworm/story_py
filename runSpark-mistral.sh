@@ -28,8 +28,9 @@ PYTHONUNBUFFERED=1 python story_writer.py \
 	--key_event_chunk_size 2 \
 	--temperature 1.2 \
 	--top_p 0.87 \
-	--top_k 50 \
+	--top_k 100 \
 	--presence_penalty 0.2 \
-	--frequency_penalty 0.3 \
-	--min_tokens 600 \
+	--frequency_penalty 0.05 \
+	--repeat_penalty 1.1 \
+	--min_tokens 400 \
 	--max_tokens 4000
